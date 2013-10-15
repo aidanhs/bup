@@ -88,6 +88,7 @@ runtests-python: all
 runtests-cmdline: all
 	t/test-index-check-device.sh
 	t/test-meta.sh
+	t/test-restore-map-owner.sh
 	t/test-restore-single-file.sh
 	t/test-rm-between-index-and-save.sh
 	t/test-command-without-init-fails.sh
