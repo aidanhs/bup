@@ -48,7 +48,8 @@ def readfile_iter(files, progress=None):
         while 1:
             if progress:
                 progress(filenum, len(b))
-            fadvise_done(f, max(0, ofs - 1024*1024))
+            if ofs > 1024*1024:
+                fadvise_done(f, ofs - 1024*1024)
             b = f.read(BLOB_READ_SIZE)
             ofs += len(b)
             if not b:
