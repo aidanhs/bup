@@ -24,13 +24,16 @@ PyObject* spam_MyIter_iternext(PyObject *self)
 {
     spam_MyIter *p = (spam_MyIter *)self;
     ssize_t num = read(p->fd, p->buf, 1024*1024);
-    if (num != 0) {
+    if (num > 0) {
         p->ofs += num;
         PyObject *tmp = Py_BuildValue("s#", p->buf, num);
         return tmp;
-    } else {
+    } else if (num == 0) {
         /* Raising of standard StopIteration exception with empty value. */
         PyErr_SetNone(PyExc_StopIteration);
+        return NULL;
+    } else {
+        // TODO: raise exception
         return NULL;
     }
 }
