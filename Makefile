@@ -17,7 +17,7 @@ default: all
 all: bup Documentation/all
 	t/configure-sampledata --setup
 
-bup: lib/bup/_version.py lib/bup/_helpers$(SOEXT) cmds
+bup: lib/bup/_version.py lib/bup/_helpers$(SOEXT) lib/bup/_hashsplit$(SOEXT) cmds
 
 Documentation/all: bup
 
@@ -76,6 +76,14 @@ lib/bup/_helpers$(SOEXT): \
 	cd lib/bup && \
 	LDFLAGS="$(LDFLAGS)" CFLAGS="$(CFLAGS)" $(PYTHON) csetup.py build
 	cp lib/bup/build/*/_helpers$(SOEXT) lib/bup/
+
+lib/bup/_hashsplit$(SOEXT): \
+		config/config.h \
+		lib/bup/_hashsplit.c lib/bup/hscsetup.py
+	@rm -f $@
+	cd lib/bup && \
+	LDFLAGS="$(LDFLAGS)" CFLAGS="$(CFLAGS)" $(PYTHON) hscsetup.py build
+	cp lib/bup/build/*/_hashsplit$(SOEXT) lib/bup/
 
 .PHONY: lib/bup/_version.py
 lib/bup/_version.py:
