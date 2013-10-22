@@ -678,8 +678,8 @@ static PyObject *open_noatime(PyObject *self, PyObject *args)
 
 typedef struct {
     PyObject_HEAD
-    long int m;
-    long int i;
+    int fd;
+    char buf[1024*1024];
 } spam_MyIter;
 
 PyObject* spam_MyIter_iter(PyObject *self)
@@ -691,9 +691,9 @@ PyObject* spam_MyIter_iter(PyObject *self)
 PyObject* spam_MyIter_iternext(PyObject *self)
 {
     spam_MyIter *p = (spam_MyIter *)self;
-    if (p->i < p->m) {
-        PyObject *tmp = Py_BuildValue("l", p->i);
-        (p->i)++;
+    ssize_t num = read(p->fd, p->buf, 40);
+    if (num != 0) {
+        PyObject *tmp = Py_BuildValue("s#", p->buf, num);
         return tmp;
     } else {
         /* Raising of standard StopIteration exception with empty value. */
@@ -738,10 +738,11 @@ static PyTypeObject spam_MyIterType = {
 static PyObject *
 spam_myiter(PyObject *self, PyObject *args)
 {
-    long int m;
     spam_MyIter *p;
 
-    if (!PyArg_ParseTuple(args, "l", &m))  return NULL;
+    int fd = -1;
+    if (!PyArg_ParseTuple(args, "i", &fd))
+        return NULL;
 
     /* I don't need python callable __init__() method for this iterator,
        so I'll simply allocate it as PyObject and initialize it by hand. */
@@ -755,8 +756,7 @@ spam_myiter(PyObject *self, PyObject *args)
         return NULL;
     }
 
-    p->m = m;
-    p->i = 0;
+    p->fd = fd;
     return (PyObject *)p;
 }
 
