@@ -25,7 +25,6 @@ PyObject* fread_iternext(PyObject *self)
         return tmp;
     } else if (num == 0) {
         /* Raising of standard StopIteration exception with empty value. */
-        Py_DECREF(p->file);
         PyErr_SetNone(PyExc_StopIteration);
         return NULL;
     } else {
@@ -34,13 +33,50 @@ PyObject* fread_iternext(PyObject *self)
     }
 }
 
+static PyObject *
+fread_new(PyTypeObject *type, PyObject *args, PyObject *kwargs)
+{
+    PyObject *file;
+    long fd = -1;
+
+    if (!PyArg_ParseTuple(args, "O:fread", &file))
+        return NULL;
+
+    PyObject *fileno = PyObject_CallMethod(file, "fileno", NULL);
+    if (fileno == NULL)
+        return NULL;
+
+    fd = PyInt_AsLong(fileno);
+    Py_DECREF(fileno);
+    if (fd == -1)
+        return NULL;
+
+    FReadState *freadstate = (FReadState *)type->tp_alloc(type, 0);
+    if (!freadstate)
+        return NULL;
+
+    Py_INCREF(file);
+    freadstate->file = file;
+    freadstate->fd = fd;
+    freadstate->ofs = 0;
+
+    return (PyObject *)freadstate;
+}
+
+static void
+fread_dealloc(PyObject *freadstate)
+{
+    Py_DECREF(((FReadState *)freadstate)->file);
+    Py_TYPE(freadstate)->tp_free(freadstate);
+}
+
 static PyTypeObject freaditer = {
     PyObject_HEAD_INIT(NULL)
     0,                         /* ob_size */
-    "_hashsplit._FReadIter",   /* tp_name */
+    "freaditer",               /* tp_name */
     sizeof(FReadState),        /* tp_basicsize */
     0,                         /* tp_itemsize */
-    0,                         /* tp_dealloc */
+    fread_dealloc,             /* tp_dealloc */
     0,                         /* tp_print */
     0,                         /* tp_getattr */
     0,                         /* tp_setattr */
@@ -73,64 +109,21 @@ static PyTypeObject freaditer = {
     0,                         /* tp_dictoffset */
     0,                         /* tp_init */
     PyType_GenericAlloc,       /* tp_alloc */
-    0                          /* tp_new */
+    fread_new                  /* tp_new */
 };
 
-static PyObject *
-fread_mkiter(PyObject *self, PyObject *args)
-{
-    FReadState *p;
-
-    PyObject *file;
-    long fd = -1;
-
-    if (!PyArg_ParseTuple(args, "O", &file))
-        return NULL;
-
-    PyObject *fileno = PyObject_CallMethod(file, "fileno", NULL);
-    if (fileno == NULL)
-        return NULL;
-
-    fd = PyInt_AsLong(fileno);
-    Py_DECREF(fileno);
-    if (fd == -1)
-        return NULL;
-
-    /* I don't need python callable __init__() method for this iterator,
-       so I'll simply allocate it as PyObject and initialize it by hand. */
-
-    p = PyObject_New(FReadState, &freaditer);
-    if (!p) return NULL;
-
-    /* I'm not sure if it's strictly necessary. */
-    if (!PyObject_Init((PyObject *)p, &freaditer)) {
-        Py_DECREF(p);
-        return NULL;
-    }
-
-    Py_INCREF(file);
-
-    p->file = file;
-    p->fd = fd;
-    p->ofs = 0;
-    return (PyObject *)p;
-}
-
 static PyMethodDef hashsplit_methods[] = {
-    {"freaditer",  fread_mkiter, METH_VARARGS, "Iterate from i=0 while i<m."},
     { NULL, NULL, 0, NULL },  // sentinel
 };
 
-
 PyMODINIT_FUNC init_hashsplit(void)
 {
-    freaditer.tp_new = PyType_GenericNew;
-    if (PyType_Ready(&freaditer) < 0)  return;
-
     PyObject *m = Py_InitModule("_hashsplit", hashsplit_methods);
     if (m == NULL)
         return;
 
-    Py_INCREF(&freaditer);
-    PyModule_AddObject(m, "_FReadIter", (PyObject *)&freaditer);
+    if (PyType_Ready(&freaditer) < 0)
+        return;
+    Py_INCREF((PyObject *)&freaditer);
+    PyModule_AddObject(m, "freaditer", (PyObject *)&freaditer);
 }
