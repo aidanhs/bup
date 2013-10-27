@@ -15,12 +15,6 @@ typedef struct {
     char buf[1024*1024];
 } FReadState;
 
-PyObject* fread_iter(PyObject *self)
-{
-    Py_INCREF(self);
-    return self;
-}
-
 PyObject* fread_iternext(PyObject *self)
 {
     FReadState *p = (FReadState *)self;
@@ -69,7 +63,7 @@ static PyTypeObject freaditer = {
     0,  /* tp_clear */
     0,  /* tp_richcompare */
     0,  /* tp_weaklistoffset */
-    fread_iter,  /* tp_iter: __iter__() method */
+    PyObject_SelfIter,  /* tp_iter: __iter__() method */
     fread_iternext  /* tp_iternext: next() method */
 };
 
