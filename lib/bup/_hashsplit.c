@@ -9,8 +9,9 @@
 
 typedef struct {
     PyObject_HEAD
-    int fd;
+    long fd;
     long long ofs;
+    PyObject *file;
     char buf[1024*1024];
 } spam_MyIter;
 
@@ -30,6 +31,7 @@ PyObject* spam_MyIter_iternext(PyObject *self)
         return tmp;
     } else if (num == 0) {
         /* Raising of standard StopIteration exception with empty value. */
+        Py_DECREF(p->file);
         PyErr_SetNone(PyExc_StopIteration);
         return NULL;
     } else {
@@ -76,8 +78,19 @@ spam_myiter(PyObject *self, PyObject *args)
 {
     spam_MyIter *p;
 
-    int fd = -1;
-    if (!PyArg_ParseTuple(args, "i", &fd))
+    PyObject *file;
+    long fd = -1;
+
+    if (!PyArg_ParseTuple(args, "O", &file))
+        return NULL;
+
+    PyObject *fileno = PyObject_CallMethod(file, "fileno", NULL);
+    if (fileno == NULL)
+        return NULL;
+
+    fd = PyInt_AsLong(fileno);
+    Py_DECREF(fileno);
+    if (fd == -1)
         return NULL;
 
     /* I don't need python callable __init__() method for this iterator,
@@ -92,6 +105,9 @@ spam_myiter(PyObject *self, PyObject *args)
         return NULL;
     }
 
+    Py_INCREF(file);
+
+    p->file = file;
     p->fd = fd;
     p->ofs = 0;
     return (PyObject *)p;
