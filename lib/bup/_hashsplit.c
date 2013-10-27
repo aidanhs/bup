@@ -13,17 +13,17 @@ typedef struct {
     long long ofs;
     PyObject *file;
     char buf[1024*1024];
-} spam_MyIter;
+} FReadState;
 
-PyObject* spam_MyIter_iter(PyObject *self)
+PyObject* fread_iter(PyObject *self)
 {
     Py_INCREF(self);
     return self;
 }
 
-PyObject* spam_MyIter_iternext(PyObject *self)
+PyObject* fread_iternext(PyObject *self)
 {
-    spam_MyIter *p = (spam_MyIter *)self;
+    FReadState *p = (FReadState *)self;
     ssize_t num = read(p->fd, p->buf, 1024*1024);
     if (num > 0) {
         p->ofs += num;
@@ -40,11 +40,11 @@ PyObject* spam_MyIter_iternext(PyObject *self)
     }
 }
 
-static PyTypeObject spam_MyIterType = {
+static PyTypeObject freaditer = {
     PyObject_HEAD_INIT(NULL)
     0,                         /*ob_size*/
-    "_hashsplit._MyIter",        /*tp_name*/
-    sizeof(spam_MyIter),       /*tp_basicsize*/
+    "_hashsplit._FReadIter",   /*tp_name*/
+    sizeof(FReadState),        /*tp_basicsize*/
     0,                         /*tp_itemsize*/
     0,                         /*tp_dealloc*/
     0,                         /*tp_print*/
@@ -69,14 +69,14 @@ static PyTypeObject spam_MyIterType = {
     0,  /* tp_clear */
     0,  /* tp_richcompare */
     0,  /* tp_weaklistoffset */
-    spam_MyIter_iter,  /* tp_iter: __iter__() method */
-    spam_MyIter_iternext  /* tp_iternext: next() method */
+    fread_iter,  /* tp_iter: __iter__() method */
+    fread_iternext  /* tp_iternext: next() method */
 };
 
 static PyObject *
-spam_myiter(PyObject *self, PyObject *args)
+fread_mkiter(PyObject *self, PyObject *args)
 {
-    spam_MyIter *p;
+    FReadState *p;
 
     PyObject *file;
     long fd = -1;
@@ -96,11 +96,11 @@ spam_myiter(PyObject *self, PyObject *args)
     /* I don't need python callable __init__() method for this iterator,
        so I'll simply allocate it as PyObject and initialize it by hand. */
 
-    p = PyObject_New(spam_MyIter, &spam_MyIterType);
+    p = PyObject_New(FReadState, &freaditer);
     if (!p) return NULL;
 
     /* I'm not sure if it's strictly necessary. */
-    if (!PyObject_Init((PyObject *)p, &spam_MyIterType)) {
+    if (!PyObject_Init((PyObject *)p, &freaditer)) {
         Py_DECREF(p);
         return NULL;
     }
@@ -114,20 +114,20 @@ spam_myiter(PyObject *self, PyObject *args)
 }
 
 static PyMethodDef hashsplit_methods[] = {
-    {"myiter",  spam_myiter, METH_VARARGS, "Iterate from i=0 while i<m."},
+    {"freaditer",  fread_mkiter, METH_VARARGS, "Iterate from i=0 while i<m."},
     { NULL, NULL, 0, NULL },  // sentinel
 };
 
 
 PyMODINIT_FUNC init_hashsplit(void)
 {
-    spam_MyIterType.tp_new = PyType_GenericNew;
-    if (PyType_Ready(&spam_MyIterType) < 0)  return;
+    freaditer.tp_new = PyType_GenericNew;
+    if (PyType_Ready(&freaditer) < 0)  return;
 
     PyObject *m = Py_InitModule("_hashsplit", hashsplit_methods);
     if (m == NULL)
         return;
 
-    Py_INCREF(&spam_MyIterType);
-    PyModule_AddObject(m, "_MyIter", (PyObject *)&spam_MyIterType);
+    Py_INCREF(&freaditer);
+    PyModule_AddObject(m, "_FReadIter", (PyObject *)&freaditer);
 }
