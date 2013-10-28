@@ -13,11 +13,11 @@ typedef struct {
     long long ofs;
     PyObject *file;
     char buf[1024*1024];
-} FReadState;
+} readfile_iter_state;
 
-PyObject* fread_iternext(PyObject *self)
+PyObject* readfile_iter_iternext(PyObject *self)
 {
-    FReadState *p = (FReadState *)self;
+    readfile_iter_state *p = (readfile_iter_state *)self;
     ssize_t num = read(p->fd, p->buf, 1024*1024);
     if (num > 0) {
         p->ofs += num;
@@ -34,7 +34,7 @@ PyObject* fread_iternext(PyObject *self)
 }
 
 static PyObject *
-fread_new(PyTypeObject *type, PyObject *args, PyObject *kwargs)
+readfile_iter_new(PyTypeObject *type, PyObject *args, PyObject *kwargs)
 {
     PyObject *file;
     long fd = -1;
@@ -51,7 +51,7 @@ fread_new(PyTypeObject *type, PyObject *args, PyObject *kwargs)
     if (fd == -1)
         return NULL;
 
-    FReadState *freadstate = (FReadState *)type->tp_alloc(type, 0);
+    readfile_iter_state *freadstate = (readfile_iter_state *)type->tp_alloc(type, 0);
     if (!freadstate)
         return NULL;
 
@@ -66,15 +66,15 @@ fread_new(PyTypeObject *type, PyObject *args, PyObject *kwargs)
 static void
 fread_dealloc(PyObject *freadstate)
 {
-    Py_DECREF(((FReadState *)freadstate)->file);
+    Py_DECREF(((readfile_iter_state *)freadstate)->file);
     Py_TYPE(freadstate)->tp_free(freadstate);
 }
 
-static PyTypeObject freaditer = {
+static PyTypeObject readfile_iter = {
     PyObject_HEAD_INIT(NULL)
     0,                         /* ob_size */
-    "freaditer",               /* tp_name */
-    sizeof(FReadState),        /* tp_basicsize */
+    "readfile_iter",           /* tp_name */
+    sizeof(readfile_iter_state), /* tp_basicsize */
     0,                         /* tp_itemsize */
     fread_dealloc,             /* tp_dealloc */
     0,                         /* tp_print */
@@ -98,7 +98,7 @@ static PyTypeObject freaditer = {
     0,                         /* tp_richcompare */
     0,                         /* tp_weaklistoffset */
     PyObject_SelfIter,         /* tp_iter */
-    fread_iternext,            /* tp_iternext */
+    readfile_iter_iternext,    /* tp_iternext */
     0,                         /* tp_methods */
     0,                         /* tp_members */
     0,                         /* tp_getset */
@@ -109,7 +109,7 @@ static PyTypeObject freaditer = {
     0,                         /* tp_dictoffset */
     0,                         /* tp_init */
     PyType_GenericAlloc,       /* tp_alloc */
-    fread_new                  /* tp_new */
+    readfile_iter_new          /* tp_new */
 };
 
 static PyMethodDef hashsplit_methods[] = {
@@ -122,8 +122,8 @@ PyMODINIT_FUNC init_hashsplit(void)
     if (m == NULL)
         return;
 
-    if (PyType_Ready(&freaditer) < 0)
+    if (PyType_Ready(&readfile_iter) < 0)
         return;
-    Py_INCREF((PyObject *)&freaditer);
-    PyModule_AddObject(m, "freaditer", (PyObject *)&freaditer);
+    Py_INCREF((PyObject *)&readfile_iter);
+    PyModule_AddObject(m, "readfile_iter", (PyObject *)&readfile_iter);
 }
