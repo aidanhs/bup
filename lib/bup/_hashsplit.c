@@ -19,15 +19,15 @@ typedef struct {
 
 PyObject* readfile_iter_iternext(PyObject *self)
 {
-    readfile_iter_state *p = (readfile_iter_state *)self;
-    ssize_t num = read(p->fds[p->curfile], p->buf, 1024*1024);
+    readfile_iter_state *s = (readfile_iter_state *)self;
+    ssize_t num = read(s->fds[s->curfile], s->buf, 1024*1024);
     if (num > 0) {
-        p->ofs += num;
-        PyObject *tmp = Py_BuildValue("s#", p->buf, num);
+        s->ofs += num;
+        PyObject *tmp = Py_BuildValue("s#", s->buf, num);
         return tmp;
-    } else if (num == 0 && p->curfile != p->numfiles - 1) { /* End of file */
-        p->ofs = 0;
-        p->curfile = p->curfile + 1;
+    } else if (num == 0 && s->curfile != s->numfiles - 1) { /* End of file */
+        s->ofs = 0;
+        s->curfile = s->curfile + 1;
         return readfile_iter_iternext(self);
     } else if (num == 0) { /* End of the file */
         /* Raising of standard StopIteration exception with empty value. */
