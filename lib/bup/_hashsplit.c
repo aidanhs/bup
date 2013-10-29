@@ -36,9 +36,12 @@ static int next_file(readfile_iter_state *s)
             return -1;
         s->fd = (int)PyInt_AsLong(fdobj);
         Py_DECREF(fdobj);
-        /* Error of -1 will propogate */
-        if (s->fd == -1)
+        /* fd can never be -1 */
+        if (s->fd == -1) {
+            if (PyErr_Occurred() == NULL)
+                PyErr_SetString(PyExc_ValueError, "invalid file descriptor");
             return -1;
+        }
     } else {
         s->fd = -1;
     }
