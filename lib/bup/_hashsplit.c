@@ -41,6 +41,13 @@ static int next_file(readfile_iter_state *s)
     return 0;
 }
 
+static void fadvise_done(int fd, ssize_t ofs)
+{
+#ifdef POSIX_FADV_DONTNEED
+    posix_fadvise(fd, 0, ofs, POSIX_FADV_DONTNEED);
+#endif
+}
+
 /* Note we don't report progress when looping as we won't have read any bytes */
 static PyObject* readfile_iter_iternext(PyObject *self)
 {
@@ -50,6 +57,8 @@ static PyObject* readfile_iter_iternext(PyObject *self)
     s = (readfile_iter_state *)self;
     if (s->progressfn != NULL)
         PyObject_CallFunction(s->progressfn, "nn", s->filenum, s->prevread);
+    if (s->ofs > 1024*1024)
+        fadvise_done(s->fd, s->ofs - 1024*1024);
 
     while (1) {
         bytes_read = read(s->fd, s->buf, BLOB_READ_SIZE);
@@ -58,6 +67,7 @@ static PyObject* readfile_iter_iternext(PyObject *self)
             s->ofs += bytes_read;
             return Py_BuildValue("s#", s->buf, bytes_read);
         } else if (bytes_read == 0 && next_file(s) != -1) { /* End of file */
+            fadvise_done(s->fd, s->ofs);
             s->ofs = 0;
             s->filenum++;
             /* Don't recurse to avoid stack overflow, loop instead */
