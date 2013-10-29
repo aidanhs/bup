@@ -9,95 +9,123 @@
 
 typedef struct {
     PyObject_HEAD
-    long *fds;
-    long long ofs;
-    Py_ssize_t curfile;
-    Py_ssize_t numfiles;
-    PyObject *files;
+    ssize_t ofs;
+    Py_ssize_t filenum;
+    /* Make sure python doesn't garbage collect and close the files */
+    PyObject *curfile;
+    int fd;
+    PyObject *fileiter;
+    PyObject *progressfn;
+    Py_ssize_t prevread;
     char buf[1024*1024];
 } readfile_iter_state;
 
+// Return -1 if the next file cannot be obtained (end of iter or error)
+int next_file(readfile_iter_state *s) {
+    PyObject *fdobj;
+    Py_XDECREF(s->curfile);
+    s->curfile = PyIter_Next(s->fileiter);
+    if (s->curfile == NULL)
+        return -1;
+    fdobj = PyObject_CallMethod(s->curfile, "fileno", NULL);
+    if (fdobj == NULL)
+        return -1;
+    s->fd = (int)PyInt_AsLong(fdobj);
+    Py_DECREF(fdobj);
+    /* Error of -1 will propogate */
+    if (s->fd == -1)
+        return -1;
+    return 0;
+}
+
+/* Note we don't report progress when looping as we won't have read any bytes */
 PyObject* readfile_iter_iternext(PyObject *self)
 {
-    readfile_iter_state *s = (readfile_iter_state *)self;
-    ssize_t num = read(s->fds[s->curfile], s->buf, 1024*1024);
-    if (num > 0) {
-        s->ofs += num;
-        PyObject *tmp = Py_BuildValue("s#", s->buf, num);
-        return tmp;
-    } else if (num == 0 && s->curfile != s->numfiles - 1) { /* End of file */
-        s->ofs = 0;
-        s->curfile = s->curfile + 1;
-        return readfile_iter_iternext(self);
-    } else if (num == 0) { /* End of the file */
-        /* Raising of standard StopIteration exception with empty value. */
-        PyErr_SetNone(PyExc_StopIteration);
-        return NULL;
-    } else {
-        // TODO: raise exception
-        return NULL;
+    readfile_iter_state *s;
+    ssize_t bytes_read;
+
+    s = (readfile_iter_state *)self;
+    if (s->progressfn != NULL)
+        PyObject_CallFunction(s->progressfn, "nn", s->filenum, s->prevread);
+
+    while (1) {
+        bytes_read = read(s->fd, s->buf, 1024*1024);
+        if (bytes_read > 0) {
+            s->prevread = bytes_read;
+            s->ofs += bytes_read;
+            return Py_BuildValue("s#", s->buf, bytes_read);
+        } else if (bytes_read == 0 && next_file(s) != -1) { /* End of file */
+            s->ofs = 0;
+            s->filenum++;
+            /* Don't recurse to avoid stack overflow, loop instead */
+        } else if (bytes_read == 0) { /* End of iter or error */
+            if (PyErr_Occurred() == NULL)
+                PyErr_SetNone(PyExc_StopIteration);
+            return NULL;
+        } else {
+            PyErr_SetString(PyExc_IOError, "failed to read file");
+            return NULL;
+        }
     }
 }
 
 static PyObject *
 readfile_iter_new(PyTypeObject *type, PyObject *args, PyObject *kwargs)
 {
-    PyObject *files;
+    PyObject *iterarg;
+    PyObject *progressfn = NULL;
 
-    if (!PyArg_ParseTuple(args, "O:fread", &files))
+    char *kw[] = {"files", "progress", NULL};
+    if (!PyArg_ParseTupleAndKeywords(
+            args, kwargs, "O|O:readfile_iter", kw, &iterarg, &progressfn))
         return NULL;
 
-    /* We expect an argument that supports the sequence protocol */
-    if (!PySequence_Check(files)) {
-        PyErr_SetString(PyExc_TypeError, "readfile_iter() expects a sequence");
+    /* We expect an argument that supports the iterator protocol, but we might
+     * need to convert it from e.g. a list first
+     */
+    PyObject *fileiter = PyObject_GetIter(iterarg);
+    if (fileiter == NULL)
+        return NULL;
+    if (!PyIter_Check(fileiter)) {
+        PyErr_SetString(PyExc_TypeError,
+            "readfile_iter() expects an iterator of files");
         return NULL;
     }
 
-    Py_ssize_t len = PySequence_Length(files);
-    if (len == -1)
+    if (progressfn != NULL && !PyCallable_Check(progressfn)) {
+        PyErr_SetString(PyExc_TypeError,
+            "readfile_iter() expects a callable progress function");
         return NULL;
-
-    long *fds = calloc(sizeof(long), len);
-    Py_ssize_t i;
-    PyObject *fileno;
-    PyObject *file;
-    for (i = 0; i < len; i++) {
-        file = PySequence_GetItem(files, i);
-        if (file == NULL)
-            return NULL;
-        fileno = PyObject_CallMethod(file, "fileno", NULL);
-        Py_DECREF(file);
-        if (fileno == NULL)
-            return NULL;
-        fds[i] = PyInt_AsLong(fileno);
-        Py_DECREF(fileno);
-        /* Assume error on -1 because this is a file descriptor */
-        if (fds[i] == -1)
-            return NULL;
     }
 
-    readfile_iter_state *freadstate =
+    readfile_iter_state *state =
         (readfile_iter_state *)type->tp_alloc(type, 0);
-    if (!freadstate)
+    if (!state)
         return NULL;
 
-    /* Make sure python doesn't garbage collect and close the files */
-    Py_INCREF(files);
-    freadstate->files = files;
-    freadstate->fds = fds;
-    freadstate->ofs = 0;
-    freadstate->curfile = 0;
-    freadstate->numfiles = len;
+    state->fileiter = fileiter;
+    state->ofs = 0;
+    state->filenum = 0;
+    state->progressfn = progressfn;
+    state->prevread = 0;
+    state->curfile = NULL;
+    /* Will initialise fd and curfile with the first file */
+    if (next_file(state) == -1)
+        return NULL;
 
-    return (PyObject *)freadstate;
+    Py_INCREF(fileiter);
+    Py_XINCREF(progressfn);
+
+    return (PyObject *)state;
 }
 
 static void
 fread_dealloc(PyObject *freadstate)
 {
     readfile_iter_state *state = (readfile_iter_state *)freadstate;
-    free(state->fds);
-    Py_DECREF(state->files);
+    Py_DECREF(state->fileiter);
+    Py_XDECREF(state->curfile);
+    Py_XDECREF(state->progressfn);
     Py_TYPE(freadstate)->tp_free(freadstate);
 }
 
