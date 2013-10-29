@@ -7,6 +7,8 @@
 //   http://docs.python.org/2/c-api/intro.html#include-files
 #include <Python.h>
 
+#define BLOB_READ_SIZE 1024*1024
+
 typedef struct {
     PyObject_HEAD
     ssize_t ofs;
@@ -17,11 +19,12 @@ typedef struct {
     PyObject *fileiter;
     PyObject *progressfn;
     Py_ssize_t prevread;
-    char buf[1024*1024];
+    char buf[BLOB_READ_SIZE];
 } readfile_iter_state;
 
 // Return -1 if the next file cannot be obtained (end of iter or error)
-int next_file(readfile_iter_state *s) {
+static int next_file(readfile_iter_state *s)
+{
     PyObject *fdobj;
     Py_XDECREF(s->curfile);
     s->curfile = PyIter_Next(s->fileiter);
@@ -39,7 +42,7 @@ int next_file(readfile_iter_state *s) {
 }
 
 /* Note we don't report progress when looping as we won't have read any bytes */
-PyObject* readfile_iter_iternext(PyObject *self)
+static PyObject* readfile_iter_iternext(PyObject *self)
 {
     readfile_iter_state *s;
     ssize_t bytes_read;
@@ -49,7 +52,7 @@ PyObject* readfile_iter_iternext(PyObject *self)
         PyObject_CallFunction(s->progressfn, "nn", s->filenum, s->prevread);
 
     while (1) {
-        bytes_read = read(s->fd, s->buf, 1024*1024);
+        bytes_read = read(s->fd, s->buf, BLOB_READ_SIZE);
         if (bytes_read > 0) {
             s->prevread = bytes_read;
             s->ofs += bytes_read;
