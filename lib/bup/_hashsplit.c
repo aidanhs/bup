@@ -129,6 +129,10 @@ readfile_iter_new(PyTypeObject *type, PyObject *args, PyObject *kwargs)
         return NULL;
     }
 
+    if (progressfn == Py_None) {
+        Py_DECREF(progressfn);
+        progressfn = NULL;
+    }
     if (progressfn != NULL && !PyCallable_Check(progressfn)) {
         PyErr_SetString(PyExc_TypeError,
             "readfile_iter() expects a callable progress function");
