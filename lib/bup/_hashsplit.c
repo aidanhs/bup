@@ -161,13 +161,13 @@ readfile_iter_new(PyTypeObject *type, PyObject *args, PyObject *kwargs)
 }
 
 static void
-fread_dealloc(PyObject *freadstate)
+readfile_iter_dealloc(PyObject *iterstate)
 {
-    readfile_iter_state *state = (readfile_iter_state *)freadstate;
+    readfile_iter_state *state = (readfile_iter_state *)iterstate;
     Py_DECREF(state->fileiter);
     Py_XDECREF(state->curfile);
     Py_XDECREF(state->progressfn);
-    Py_TYPE(freadstate)->tp_free(freadstate);
+    Py_TYPE(iterstate)->tp_free(iterstate);
 }
 
 static PyTypeObject readfile_iter = {
@@ -176,7 +176,7 @@ static PyTypeObject readfile_iter = {
     "readfile_iter",           /* tp_name */
     sizeof(readfile_iter_state), /* tp_basicsize */
     0,                         /* tp_itemsize */
-    fread_dealloc,             /* tp_dealloc */
+    readfile_iter_dealloc,     /* tp_dealloc */
     0,                         /* tp_print */
     0,                         /* tp_getattr */
     0,                         /* tp_setattr */
