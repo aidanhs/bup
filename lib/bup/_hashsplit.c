@@ -66,15 +66,17 @@ static PyObject* readfile_iter_iternext(PyObject *self)
             s->prevread = bytes_read;
             s->ofs += bytes_read;
             return Py_BuildValue("s#", s->buf, bytes_read);
-        } else if (bytes_read == 0 && next_file(s) != -1) { /* End of file */
+        } else if (bytes_read == 0) {
             fadvise_done(s->fd, s->ofs);
-            s->ofs = 0;
-            s->filenum++;
-            /* Don't recurse to avoid stack overflow, loop instead */
-        } else if (bytes_read == 0) { /* End of iter or error */
-            if (PyErr_Occurred() == NULL)
-                PyErr_SetNone(PyExc_StopIteration);
-            return NULL;
+            if (next_file(s) != -1) { /* End of file */
+                s->ofs = 0;
+                s->filenum++;
+                /* Don't recurse to avoid stack overflow, loop instead */
+            } else {
+                if (PyErr_Occurred() == NULL)
+                    PyErr_SetNone(PyExc_StopIteration);
+                return NULL;
+            }
         } else {
             PyErr_SetString(PyExc_IOError, "failed to read file");
             return NULL;
