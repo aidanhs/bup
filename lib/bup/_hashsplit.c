@@ -30,14 +30,18 @@ static int next_file(readfile_iter_state *s)
     s->curfile = PyIter_Next(s->fileiter);
     if (s->curfile == NULL)
         return -1;
-    fdobj = PyObject_CallMethod(s->curfile, "fileno", NULL);
-    if (fdobj == NULL)
-        return -1;
-    s->fd = (int)PyInt_AsLong(fdobj);
-    Py_DECREF(fdobj);
-    /* Error of -1 will propogate */
-    if (s->fd == -1)
-        return -1;
+    if (PyObject_HasAttrString(s->curfile, "fileno")) {
+        fdobj = PyObject_CallMethod(s->curfile, "fileno", NULL);
+        if (fdobj == NULL)
+            return -1;
+        s->fd = (int)PyInt_AsLong(fdobj);
+        Py_DECREF(fdobj);
+        /* Error of -1 will propogate */
+        if (s->fd == -1)
+            return -1;
+    } else {
+        s->fd = -1;
+    }
     return 0;
 }
 
@@ -53,6 +57,7 @@ static PyObject* readfile_iter_iternext(PyObject *self)
 {
     readfile_iter_state *s;
     ssize_t bytes_read;
+    PyObject *bytesobj = NULL;
 
     s = (readfile_iter_state *)self;
     if (s->progressfn != NULL)
@@ -61,13 +66,27 @@ static PyObject* readfile_iter_iternext(PyObject *self)
         fadvise_done(s->fd, s->ofs - 1024*1024);
 
     while (1) {
-        bytes_read = read(s->fd, s->buf, BLOB_READ_SIZE);
+        int realfile = (s->fd != -1);
+        if (realfile) {
+            bytes_read = read(s->fd, s->buf, BLOB_READ_SIZE);
+        } else { /* Not a real file TODO: use PyObject_CallMethodObjArgs */
+            bytesobj = PyObject_CallMethod(
+                s->curfile, "read", "n", BLOB_READ_SIZE, NULL);
+            if (bytesobj == NULL)
+                return NULL;
+            bytes_read = PyString_GET_SIZE(bytesobj);
+        }
         if (bytes_read > 0) {
             s->prevread = bytes_read;
             s->ofs += bytes_read;
-            return Py_BuildValue("s#", s->buf, bytes_read);
+            if (realfile) {
+                return Py_BuildValue("s#", s->buf, bytes_read);
+            } else {
+                return bytesobj;
+            }
         } else if (bytes_read == 0) {
-            fadvise_done(s->fd, s->ofs);
+            if (realfile)
+                fadvise_done(s->fd, s->ofs);
             if (next_file(s) != -1) { /* End of file */
                 s->ofs = 0;
                 s->filenum++;
