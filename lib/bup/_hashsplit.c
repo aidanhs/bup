@@ -300,11 +300,13 @@ static PyObject* splitbuf_iternext(PyObject *self)
         level = (bits - s->basebits) / s->fanbits;
         //printf("%d\n", bits);
         memcpy(s->prevbuf, bufpeekbytes, ofs);
+        Py_DECREF(bufpeekobj);
         PyObject *retbuf = PyBuffer_FromMemory(s->prevbuf, ofs);
         if (retbuf == NULL)
             return NULL;
         return Py_BuildValue("Ni", retbuf, level);
     } else {
+        Py_DECREF(bufpeekobj);
         s->consumeend = 1;
         return splitbuf_consumeend(self);
     }
