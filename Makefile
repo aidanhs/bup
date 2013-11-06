@@ -79,7 +79,7 @@ lib/bup/_helpers$(SOEXT): \
 
 lib/bup/_hashsplit$(SOEXT): \
 		config/config.h \
-		lib/bup/_hashsplit.c lib/bup/hscsetup.py
+		lib/bup/bupsplit.c lib/bup/_hashsplit.c lib/bup/hscsetup.py
 	@rm -f $@
 	cd lib/bup && \
 	LDFLAGS="$(LDFLAGS)" CFLAGS="$(CFLAGS)" $(PYTHON) hscsetup.py build
