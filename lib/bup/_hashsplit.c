@@ -282,23 +282,20 @@ static PyObject* splitbuf_iternext(PyObject *self)
         return NULL;
     bufpeekobj = PyObject_CallMethod(s->bufobj, "peek", "O", bufused);
     Py_DECREF(bufused);
-    // Do I need to clean up bufpeekbytes?
+    // Cleaned up when bufpeekobj is
     if (PyObject_AsCharBuffer(
             bufpeekobj, ((const char **)&bufpeekbytes), &bufpeeklen) == -1)
         return NULL;
-    //printf("test %p\n", bufpeekbytes);
     if (splitbuf_actual(bufpeekbytes, bufpeeklen, &ofs, &bits) == -1)
         return NULL;
     if (ofs > BLOB_MAX)
         ofs = BLOB_MAX;
-    //printf("ofs %d\n", ofs);
     if (ofs) {
         PyObject *tmp = PyObject_CallMethod(s->bufobj, "eat", "i", ofs);
         if (tmp == NULL)
             return NULL;
         Py_DECREF(tmp);
         level = (bits - s->basebits) / s->fanbits;
-        //printf("%d\n", bits);
         memcpy(s->prevbuf, bufpeekbytes, ofs);
         Py_DECREF(bufpeekobj);
         PyObject *retbuf = PyBuffer_FromMemory(s->prevbuf, ofs);
