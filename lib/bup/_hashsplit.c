@@ -98,6 +98,7 @@ static PyObject* readfile_iter_iternext(PyObject *self)
                 s->filenum++;
                 /* Don't recurse to avoid stack overflow, loop instead */
             } else {
+                // TODO: do we need to check for error?
                 if (PyErr_Occurred() == NULL)
                     PyErr_SetNone(PyExc_StopIteration);
                 return NULL;
@@ -258,6 +259,7 @@ static PyObject* splitbuf_consumeend(PyObject *self)
         retbuf = PyObject_CallMethod(s->bufobj, "get", "i", BLOB_MAX, NULL);
         return Py_BuildValue("Ni", retbuf, 0);
     } else {
+        // TODO: do we need to check if error occurred?
         if (PyErr_Occurred() == NULL)
             PyErr_SetNone(PyExc_StopIteration);
         return NULL;
