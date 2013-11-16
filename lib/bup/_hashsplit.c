@@ -221,15 +221,67 @@ static PyTypeObject readfile_iter = {
 /********************************************************/
 
 typedef struct {
-    PyObject_HEAD
-    PyObject *bufobj;
+    unsigned char *buf;
+    size_t size; // actual size of buf
+    unsigned char *start;
+    size_t len;
+} Buf;
+static Buf *Buf_new(void)
+{
+    Buf *bufobj = malloc(sizeof(Buf));
+    bufobj->buf = malloc(BLOB_READ_SIZE);
+    bufobj->size = BLOB_READ_SIZE;
+    bufobj->start = bufobj->buf;
+    bufobj->len = 0;
+    return bufobj;
+}
+static size_t Buf_used (Buf *b)
+{
+    return b->len;
+}
+static void Buf_eat (Buf *b, size_t count)
+{
+    b->start += count;
+    b->len -= count;
+}
+static void Buf_peek (Buf *b, size_t count, unsigned char *target, size_t *got)
+{
+    *got = count < b->len ? count : b->len;
+    memcpy(target, b->start, *got);
+}
+static void Buf_get (Buf *b, size_t count, unsigned char *target, size_t *got)
+{
+    Buf_peek(b, count, target, got);
+    Buf_eat(b, *got);
+}
+static void Buf_put (Buf *b, unsigned char *putsrc, size_t putlen)
+{
+    if (b->start + b->len + putlen > b->buf + b->size) {
+        unsigned char* newbuf = malloc(b->len + putlen);
+        memmove(newbuf, b->start, b->len);
+        free(b->buf);
+        b->buf = newbuf;
+        b->start = b->buf;
+        b->size = b->len + putlen;
+    }
+    memcpy(b->start + b->len, putsrc, putlen);
+    b->len += putlen;
+}
+
+typedef struct {
+    unsigned char buf[BLOB_MAX];
+    size_t len;
+    int level;
+} buf_and_level;
+
+typedef struct {
+    Buf *bufobj;
     int basebits;
     int fanbits;
-    unsigned char prevbuf[BLOB_MAX];
     int consumeend;
 } splitbuf_state;
 
-static int splitbuf_actual(
+static void splitbuf_actual(
     const unsigned char *buf, Py_ssize_t len, int *ofsptr, int *bitsptr)
 {
     int ofs = 0, bits = -1;
@@ -240,152 +292,65 @@ static int splitbuf_actual(
         assert(bits >= BUP_BLOBBITS);
     *ofsptr = ofs;
     *bitsptr = bits;
-    return 0;
 }
 
-static PyObject* splitbuf_consumeend(PyObject *self)
+static int splitbuf_consumeend(splitbuf_state *s, buf_and_level *retval)
 {
-    splitbuf_state *s = (splitbuf_state *)self;
-    PyObject *retbuf, *bufused;
-
-    bufused = PyObject_CallMethod(s->bufobj, "used", NULL);
-    if (bufused == NULL)
-        return NULL;
-    Py_ssize_t used = PyInt_AsSsize_t(bufused);
-    Py_DECREF(bufused);
-    // There can never be a negative size in the buffer
-    if (used == -1)
-        return NULL;
+    size_t used = Buf_used(s->bufobj);
     if (used >= BLOB_MAX) {
-        retbuf = PyObject_CallMethod(s->bufobj, "get", "i", BLOB_MAX, NULL);
-        return Py_BuildValue("Ni", retbuf, 0);
+        Buf_get(s->bufobj, BLOB_MAX, retval->buf, &(retval->len));
+        retval->level = 0;
+        return 0;
     } else {
-        // TODO: do we need to check if error occurred?
-        if (PyErr_Occurred() == NULL)
-            PyErr_SetNone(PyExc_StopIteration);
-        return NULL;
+        return 1;
     }
 }
 
-static PyObject* splitbuf_iternext(PyObject *self)
+static int splitbuf_iternext(splitbuf_state *s, buf_and_level *retval)
 {
-    splitbuf_state *s = (splitbuf_state *)self;
-    PyObject *bufused;
-    PyObject *bufpeekobj;
-    const unsigned char *bufpeekbytes;
-    Py_ssize_t bufpeeklen;
+    size_t bufused;
+    size_t bufpeeklen;
     int ofs, bits;
     int level;
 
     if (s->consumeend)
-        return splitbuf_consumeend(self);
+        return splitbuf_consumeend(s, retval);
 
-    bufused = PyObject_CallMethod(s->bufobj, "used", NULL);
-    if (bufused == NULL)
-        return NULL;
-    bufpeekobj = PyObject_CallMethod(s->bufobj, "peek", "O", bufused);
-    Py_DECREF(bufused);
-    // Cleaned up when bufpeekobj is
-    if (PyObject_AsCharBuffer(
-            bufpeekobj, ((const char **)&bufpeekbytes), &bufpeeklen) == -1)
-        return NULL;
-    if (splitbuf_actual(bufpeekbytes, bufpeeklen, &ofs, &bits) == -1)
-        return NULL;
+    bufused = Buf_used(s->bufobj);
+    unsigned char bufpeekbytes[bufused];
+    Buf_peek(s->bufobj, bufused, bufpeekbytes, &bufpeeklen);
+    splitbuf_actual(bufpeekbytes, bufpeeklen, &ofs, &bits);
     if (ofs > BLOB_MAX)
         ofs = BLOB_MAX;
     if (ofs) {
-        PyObject *tmp = PyObject_CallMethod(s->bufobj, "eat", "i", ofs);
-        if (tmp == NULL)
-            return NULL;
-        Py_DECREF(tmp);
+        Buf_eat(s->bufobj, ofs);
         level = (bits - s->basebits) / s->fanbits;
-        memcpy(s->prevbuf, bufpeekbytes, ofs);
-        Py_DECREF(bufpeekobj);
-        PyObject *retbuf = PyBuffer_FromMemory(s->prevbuf, ofs);
-        if (retbuf == NULL)
-            return NULL;
-        return Py_BuildValue("Ni", retbuf, level);
+        memcpy(retval->buf, bufpeekbytes, ofs);
+        retval->len = ofs;
+        retval->level = level;
+        return 0;
     } else {
-        Py_DECREF(bufpeekobj);
         s->consumeend = 1;
-        return splitbuf_consumeend(self);
+        return splitbuf_consumeend(s, retval);
     }
 }
 
-static PyObject *
-splitbuf_new(PyTypeObject *type, PyObject *args, PyObject *kwargs)
+static splitbuf_state *
+splitbuf_new(Buf *bufobj, int basebits, int fanbits)
 {
-    PyObject *bufobj;
-    int basebits;
-    int fanbits;
-
-    if (!PyArg_ParseTuple(args, "Oii:_splitbuf", &bufobj, &basebits, &fanbits))
-        return NULL;
-
-    /* TODO: don't assume this is a buf object */
-
-    splitbuf_state *state = (splitbuf_state *)type->tp_alloc(type, 0);
-    if (!state)
-        return NULL;
-
-    Py_INCREF(bufobj);
-    state->bufobj = bufobj;
-    state->basebits = basebits;
-    state->fanbits = fanbits;
-    state->consumeend = 0;
-
-    return (PyObject *)state;
+    splitbuf_state *s = calloc(1, sizeof(splitbuf_state));
+    s->bufobj = bufobj;
+    s->basebits = basebits;
+    s->fanbits = fanbits;
+    s->consumeend = 0;
+    return s;
 }
 
 static void
-splitbuf_dealloc(PyObject *iterstate)
+splitbuf_del(splitbuf_state *s)
 {
-    splitbuf_state *state = (splitbuf_state *)iterstate;
-    Py_DECREF(state->bufobj);
-    Py_TYPE(iterstate)->tp_free(iterstate);
+    free(s);
 }
-
-static PyTypeObject splitbuf = {
-    PyObject_HEAD_INIT(NULL)
-    0,                         /* ob_size */
-    "_splitbuf",               /* tp_name */
-    sizeof(splitbuf_state),    /* tp_basicsize */
-    0,                         /* tp_itemsize */
-    splitbuf_dealloc,          /* tp_dealloc */
-    0,                         /* tp_print */
-    0,                         /* tp_getattr */
-    0,                         /* tp_setattr */
-    0,                         /* tp_compare */
-    0,                         /* tp_repr */
-    0,                         /* tp_as_number */
-    0,                         /* tp_as_sequence */
-    0,                         /* tp_as_mapping */
-    0,                         /* tp_hash */
-    0,                         /* tp_call */
-    0,                         /* tp_str */
-    0,                         /* tp_getattro */
-    0,                         /* tp_setattro */
-    0,                         /* tp_as_buffer */
-    Py_TPFLAGS_DEFAULT,        /* tp_flags */
-    0,                         /* tp_doc */
-    0,                         /* tp_traverse */
-    0,                         /* tp_clear */
-    0,                         /* tp_richcompare */
-    0,                         /* tp_weaklistoffset */
-    PyObject_SelfIter,         /* tp_iter */
-    splitbuf_iternext,         /* tp_iternext */
-    0,                         /* tp_methods */
-    0,                         /* tp_members */
-    0,                         /* tp_getset */
-    0,                         /* tp_base */
-    0,                         /* tp_dict */
-    0,                         /* tp_descr_get */
-    0,                         /* tp_descr_set */
-    0,                         /* tp_dictoffset */
-    0,                         /* tp_init */
-    PyType_GenericAlloc,       /* tp_alloc */
-    splitbuf_new               /* tp_new */
-};
 
 /********************************************************/
 /********************************************************/
@@ -395,14 +360,14 @@ typedef struct {
     PyObject_HEAD
     PyObject *progressfn;
     PyObject *files;
-    PyObject *basebitsobj;
-    PyObject *fanbitsobj;
-    PyObject *bufobj;
+    int basebits;
+    int fanbits;
+    Buf *bufobj;
     // For holding iterator states
     PyObject *readfile_iter;
-    PyObject *splitbuf;
-    // To create new iterators
-    PyObject *splitbuffn;
+    splitbuf_state *splitbuf;
+    // For building return value
+    buf_and_level ret;
 } hashsplit_iter_state;
 
 static PyObject* hashsplit_iter_iternext(PyObject *self)
@@ -420,19 +385,14 @@ static PyObject* hashsplit_iter_iternext(PyObject *self)
                 }
                 return NULL;
             }
-            PyObject *usedobj = PyObject_CallMethod(s->bufobj, "used", NULL);
-            if (usedobj == NULL)
-                return NULL;
-            int used = PyInt_AsLong(usedobj);
-            if (used == -1)
-                return NULL;
-            PyObject *retbuf = PyObject_CallMethod(s->bufobj, "get", "O", usedobj);
-            Py_DECREF(usedobj);
-            if (retbuf == NULL)
-                return NULL;
-            Py_DECREF(s->bufobj);
+            size_t used = Buf_used(s->bufobj);
+            s->ret.level = 0;
+            Buf_get(s->bufobj, used, s->ret.buf, &s->ret.len);
             s->bufobj = NULL;
-            return Py_BuildValue("Ni", retbuf, 0);
+
+            PyObject *tmpbuf = PyBuffer_FromMemory(s->ret.buf, s->ret.len);
+            return Py_BuildValue("Ni", tmpbuf, s->ret.level);
+            //return Py_BuildValue("s#i", s->ret.buf, s->ret.len, s->ret.level);
         }
 
         // Start up a new splitbuf iterator
@@ -448,30 +408,23 @@ static PyObject* hashsplit_iter_iternext(PyObject *self)
                     continue;
                 }
             } else {
-                PyObject *tmpobj = PyObject_CallMethod(
-                    s->bufobj, "put", "O", inblock);
+                char *tmpbuf;
+                ssize_t tmplen;
+                PyString_AsStringAndSize(inblock, &tmpbuf, &tmplen);
+                Buf_put(s->bufobj, (unsigned char*)tmpbuf, tmplen);
                 Py_DECREF(inblock);
-                if (tmpobj == NULL)
-                    return NULL;
-                Py_DECREF(tmpobj);
-                s->splitbuf = PyObject_CallFunctionObjArgs(
-                    s->splitbuffn, s->bufobj, s->basebitsobj, s->fanbitsobj, NULL);
-                if (s->splitbuf == NULL)
-                    return NULL;
+                s->splitbuf = splitbuf_new(s->bufobj, s->basebits, s->fanbits);
             }
         }
 
-        PyObject *bufAndLevel = PyIter_Next(s->splitbuf);
-        if (bufAndLevel == NULL) {
-            if (PyErr_Occurred()) {
-                return NULL;
-            } else {
-                /* Don't recurse to avoid stack overflow, loop instead */
-                Py_DECREF(s->splitbuf);
-                s->splitbuf = NULL;
-            }
+        if (splitbuf_iternext(s->splitbuf, &s->ret) == 1) {
+            /* Don't recurse (to avoid stack overflow), loop instead */
+            splitbuf_del(s->splitbuf);
+            s->splitbuf = NULL;
         } else {
-            return bufAndLevel;
+            PyObject *tmpbuf = PyBuffer_FromMemory(s->ret.buf, s->ret.len);
+            return Py_BuildValue("Ni", tmpbuf, s->ret.level);
+            //return Py_BuildValue("s#i", s->ret.buf, s->ret.len, s->ret.level);
         }
     }
 }
@@ -497,6 +450,10 @@ hashsplit_iter_new(PyTypeObject *type, PyObject *args, PyObject *kwargs)
     PyObject *basebitsobj = PyObject_CallMethod(helpersmod, "blobbits", NULL);
     if (basebitsobj == NULL)
         return NULL;
+    long basebits = PyInt_AsLong(basebitsobj);
+    if (basebits == -1)
+        return NULL;
+    Py_DECREF(basebitsobj);
     Py_DECREF(helpersstr);
     Py_DECREF(helpersmod);
 
@@ -512,6 +469,10 @@ hashsplit_iter_new(PyTypeObject *type, PyObject *args, PyObject *kwargs)
     PyObject *fanbitsintobj = PyNumber_Int(fanbitsobj);
     if (fanbitsintobj == NULL)
         return NULL;
+    long fanbits = PyInt_AsLong(fanbitsintobj);
+    if (fanbits == -1)
+        return NULL;
+    Py_DECREF(fanbitsintobj);
     Py_DECREF(fanbitsobj);
     Py_DECREF(mathstr);
     Py_DECREF(mathmod);
@@ -522,27 +483,22 @@ hashsplit_iter_new(PyTypeObject *type, PyObject *args, PyObject *kwargs)
     PyObject *hsmod = PyImport_Import(hsstr);
     if (hsmod == NULL)
         return NULL;
-    PyObject *bufobj = PyObject_CallMethod(hsmod, "Buf", NULL);
-    if (bufobj == NULL)
-        return NULL;
     PyObject *readfile_iterobj = PyObject_CallMethod(
         hsmod, "readfile_iter", "OO", files, progressfn);
     if (readfile_iterobj == NULL)
         return NULL;
-    PyObject *splitbuffn = PyObject_GetAttrString(hsmod, "_splitbuf");
-    if (splitbuffn == NULL)
-        return NULL;
     Py_DECREF(hsstr);
     Py_DECREF(hsmod);
+
+    Buf *bufobj = Buf_new();
 
     Py_INCREF(progressfn);
     state->progressfn = progressfn;
     state->files = files;
-    state->basebitsobj = basebitsobj;
-    state->fanbitsobj = fanbitsintobj;
+    state->basebits= basebits;
+    state->fanbits= fanbits;
     state->bufobj = bufobj;
     state->splitbuf = NULL;
-    state->splitbuffn = splitbuffn;
     state->readfile_iter = readfile_iterobj;
 
     return (PyObject *)state;
@@ -552,13 +508,10 @@ static void
 hashsplit_iter_dealloc(PyObject *iterstate)
 {
     hashsplit_iter_state *state = (hashsplit_iter_state *)iterstate;
+    splitbuf_del(state->splitbuf);
+    free(state->bufobj);
     Py_DECREF(state->progressfn);
     Py_DECREF(state->files);
-    Py_DECREF(state->basebitsobj);
-    Py_DECREF(state->fanbitsobj);
-    Py_DECREF(state->splitbuffn);
-    Py_XDECREF(state->bufobj);
-    Py_XDECREF(state->splitbuf);
     Py_XDECREF(state->readfile_iter);
     Py_TYPE(iterstate)->tp_free(iterstate);
 }
@@ -621,16 +574,12 @@ PyMODINIT_FUNC init_hashsplit(void)
 
     if (PyType_Ready(&readfile_iter) < 0)
         return;
-    if (PyType_Ready(&splitbuf) < 0)
-        return;
     if (PyType_Ready(&hashsplit_iter) < 0)
         return;
     Py_INCREF((PyObject *)&readfile_iter);
-    Py_INCREF((PyObject *)&splitbuf);
     Py_INCREF((PyObject *)&hashsplit_iter);
     // TODO: check for error below
     // TODO: double check all Py_INCREFs look reasonable
     PyModule_AddObject(m, "readfile_iter", (PyObject *)&readfile_iter);
-    PyModule_AddObject(m, "_splitbuf", (PyObject *)&splitbuf);
     PyModule_AddObject(m, "_hashsplit_iter", (PyObject *)&hashsplit_iter);
 }
