@@ -235,6 +235,11 @@ static Buf *Buf_new(void)
     bufobj->len = 0;
     return bufobj;
 }
+static void Buf_del(Buf *b)
+{
+    free(b->buf);
+    free(b);
+}
 static size_t Buf_used (Buf *b)
 {
     return b->len;
@@ -388,6 +393,7 @@ static PyObject* hashsplit_iter_iternext(PyObject *self)
             size_t used = Buf_used(s->bufobj);
             s->ret.level = 0;
             Buf_get(s->bufobj, used, s->ret.buf, &s->ret.len);
+            Buf_del(s->bufobj);
             s->bufobj = NULL;
 
             PyObject *tmpbuf = PyBuffer_FromMemory(s->ret.buf, s->ret.len);
@@ -508,8 +514,12 @@ static void
 hashsplit_iter_dealloc(PyObject *iterstate)
 {
     hashsplit_iter_state *state = (hashsplit_iter_state *)iterstate;
-    splitbuf_del(state->splitbuf);
-    free(state->bufobj);
+    if (state->splitbuf != NULL) {
+        splitbuf_del(state->splitbuf);
+    }
+    if (state->bufobj != NULL) {
+        Buf_del(state->bufobj);
+    }
     Py_DECREF(state->progressfn);
     Py_DECREF(state->files);
     Py_XDECREF(state->readfile_iter);
