@@ -289,50 +289,28 @@ typedef struct {
     Buf *bufobj;
     int basebits;
     int fanbits;
-    int consumeend;
+    Rollsum roll;
 } splitbuf_state;
-
-static void splitbuf_actual(
-    const unsigned char *buf, Py_ssize_t len, int *ofsptr, int *bitsptr)
-{
-    int ofs = 0, bits = -1;
-
-    assert(len <= INT_MAX);
-    ofs = bupsplit_find_ofs(buf, len, &bits);
-    if (ofs)
-        assert(bits >= BUP_BLOBBITS);
-    *ofsptr = ofs;
-    *bitsptr = bits;
-}
-
-static int splitbuf_consumeend(splitbuf_state *s, buf_and_level *retval)
-{
-    size_t used = Buf_used(s->bufobj);
-    if (used >= BLOB_MAX) {
-        Buf_get(s->bufobj, BLOB_MAX, retval->buf, &(retval->len));
-        retval->level = 0;
-        return 0;
-    } else {
-        return 1;
-    }
-}
 
 static int splitbuf_iternext(splitbuf_state *s, buf_and_level *retval)
 {
-    size_t bufused;
     size_t bufpeeklen;
-    int ofs, bits;
+    int ofs = 0, bits = -1;
     int level;
 
-    if (s->consumeend)
-        return splitbuf_consumeend(s, retval);
-
-    bufused = Buf_used(s->bufobj);
-    unsigned char bufpeekbytes[bufused];
-    Buf_peek(s->bufobj, bufused, bufpeekbytes, &bufpeeklen);
-    splitbuf_actual(bufpeekbytes, bufpeeklen, &ofs, &bits);
-    if (ofs > BLOB_MAX)
+    // Split up to BLOB_MAX bytes
+    unsigned char bufpeekbytes[BLOB_MAX];
+    Buf_peek(s->bufobj, BLOB_MAX, bufpeekbytes, &bufpeeklen);
+    assert(bufpeeklen <= INT_MAX);
+    ofs = bupsplit_next_ofs(&s->roll, bufpeekbytes, bufpeeklen, &bits);
+    // Splitting here, so reinitialise rollsum
+    rollsum_init(&s->roll);
+    if (ofs)
+        assert(bits >= BUP_BLOBBITS);
+    if (!ofs && bufpeeklen == BLOB_MAX) {
         ofs = BLOB_MAX;
+        bits = 0;
+    }
     if (ofs) {
         Buf_eat(s->bufobj, ofs);
         level = (bits - s->basebits) / s->fanbits;
@@ -341,8 +319,7 @@ static int splitbuf_iternext(splitbuf_state *s, buf_and_level *retval)
         retval->level = level;
         return 0;
     } else {
-        s->consumeend = 1;
-        return splitbuf_consumeend(s, retval);
+        return 1;
     }
 }
 
@@ -350,10 +327,10 @@ static splitbuf_state *
 splitbuf_new(Buf *bufobj, int basebits, int fanbits)
 {
     splitbuf_state *s = calloc(1, sizeof(splitbuf_state));
+    rollsum_init(&s->roll);
     s->bufobj = bufobj;
     s->basebits = basebits;
     s->fanbits = fanbits;
-    s->consumeend = 0;
     return s;
 }
 
@@ -371,8 +348,6 @@ typedef struct {
     PyObject_HEAD
     PyObject *progressfn;
     PyObject *files;
-    int basebits;
-    int fanbits;
     Buf *bufobj;
     // For holding iterator states
     PyObject *readfile_iter;
@@ -388,7 +363,7 @@ static PyObject* hashsplit_iter_iternext(PyObject *self)
     while (1) {
 
         // End of the line for this iterator
-        if (s->readfile_iter == NULL) {
+        if (s->readfile_iter == NULL && s->splitbuf == NULL) {
             if (s->bufobj == NULL) {
                 // TODO: do we need to check for error?
                 if (PyErr_Occurred() == NULL) {
@@ -407,25 +382,23 @@ static PyObject* hashsplit_iter_iternext(PyObject *self)
             //return Py_BuildValue("s#i", s->ret.buf, s->ret.len, s->ret.level);
         }
 
-        // Start up a new splitbuf iterator
-        if (s->splitbuf == NULL) {
+        // Fill up buffer to ensure we never terminate our roll before finding
+        // an ofs
+        if (Buf_used(s->bufobj) < BLOB_MAX && s->readfile_iter != NULL) {
             PyObject *inblock = PyIter_Next(s->readfile_iter);
             if (inblock == NULL) {
                 if (PyErr_Occurred()) {
                     return NULL;
                 } else {
-                    // Finished main method loop, time to wrap up
                     Py_DECREF(s->readfile_iter);
                     s->readfile_iter = NULL;
-                    continue;
                 }
             } else {
                 char *tmpbuf;
                 ssize_t tmplen;
                 PyString_AsStringAndSize(inblock, &tmpbuf, &tmplen);
-                Buf_put(s->bufobj, (unsigned char*)tmpbuf, tmplen);
+                Buf_put(s->bufobj, (unsigned char *)tmpbuf, tmplen);
                 Py_DECREF(inblock);
-                s->splitbuf = splitbuf_new(s->bufobj, s->basebits, s->fanbits);
             }
         }
 
@@ -507,10 +480,8 @@ hashsplit_iter_new(PyTypeObject *type, PyObject *args, PyObject *kwargs)
     Py_INCREF(progressfn);
     state->progressfn = progressfn;
     state->files = files;
-    state->basebits= basebits;
-    state->fanbits= fanbits;
     state->bufobj = bufobj;
-    state->splitbuf = NULL;
+    state->splitbuf = splitbuf_new(bufobj, basebits, fanbits);
     state->readfile_iter = readfile_iterobj;
 
     return (PyObject *)state;

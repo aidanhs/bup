@@ -28,7 +28,6 @@
  * SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
  */
 #include "bupsplit.h"
-#include <stdint.h>
 #include <memory.h>
 #include <stdlib.h>
 #include <stdio.h>
@@ -40,12 +39,6 @@
 // slightly worse than the librsync value of 31 for my arbitrary test data.
 #define ROLLSUM_CHAR_OFFSET 31
 
-typedef struct {
-    unsigned s1, s2;
-    uint8_t window[BUP_WINDOWSIZE];
-    int wofs;
-} Rollsum;
-
 
 // These formulas are based on rollsum.h in the librsync project.
 static void rollsum_add(Rollsum *r, uint8_t drop, uint8_t add)
@@ -55,7 +48,7 @@ static void rollsum_add(Rollsum *r, uint8_t drop, uint8_t add)
 }
 
 
-static void rollsum_init(Rollsum *r)
+void rollsum_init(Rollsum *r)
 {
     r->s1 = BUP_WINDOWSIZE * ROLLSUM_CHAR_OFFSET;
     r->s2 = BUP_WINDOWSIZE * (BUP_WINDOWSIZE-1) * ROLLSUM_CHAR_OFFSET;
@@ -115,6 +108,25 @@ int bupsplit_find_ofs(const unsigned char *buf, int len, int *bits)
     return 0;
 }
 
+int bupsplit_next_ofs(Rollsum *r, const unsigned char *buf, int len, int *bits)
+{
+    int count;
+
+    for (count = 0; count < len; count++) {
+        rollsum_roll(r, buf[count]);
+        if ((r->s2 & (BUP_BLOBSIZE-1)) == ((~0) & (BUP_BLOBSIZE-1))) {
+            if (bits) {
+                unsigned rsum = rollsum_digest(r);
+                *bits = BUP_BLOBBITS;
+                rsum >>= BUP_BLOBBITS;
+                for (*bits = BUP_BLOBBITS; (rsum >>= 1) & 1; (*bits)++)
+                    ;
+            }
+            return count+1;
+        }
+    }
+    return 0;
+}
 
 #ifndef BUP_NO_SELFTEST
 #define BUP_SELFTEST_SIZE 100000
