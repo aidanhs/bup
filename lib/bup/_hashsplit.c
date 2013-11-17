@@ -254,11 +254,6 @@ static void Buf_peek (Buf *b, size_t count, unsigned char *target, size_t *got)
     *got = count < b->len ? count : b->len;
     memcpy(target, b->start, *got);
 }
-static void Buf_get (Buf *b, size_t count, unsigned char *target, size_t *got)
-{
-    Buf_peek(b, count, target, got);
-    Buf_eat(b, *got);
-}
 static void Buf_put (Buf *b, unsigned char *putsrc, size_t putlen)
 {
     if (b->start + b->len + putlen > b->buf + b->size) {
@@ -298,36 +293,38 @@ static int splitbuf_iternext(splitbuf_state *s, buf_and_level *retval)
     int ofs = 0, bits = -1;
     int level;
 
-    // Split up to BLOB_MAX bytes
+    // Find next split point, stopping at BLOB_MAX or end of buffer (whichever
+    // comes first) if we don't find one
     unsigned char bufpeekbytes[BLOB_MAX];
     Buf_peek(s->bufobj, BLOB_MAX, bufpeekbytes, &bufpeeklen);
-    assert(bufpeeklen <= INT_MAX);
-    ofs = bupsplit_next_ofs(&s->roll, bufpeekbytes, bufpeeklen, &bits);
-    // Splitting here, so reinitialise rollsum
-    rollsum_init(&s->roll);
-    if (ofs)
-        assert(bits >= BUP_BLOBBITS);
-    if (!ofs && bufpeeklen == BLOB_MAX) {
-        ofs = BLOB_MAX;
-        bits = 0;
-    }
-    if (ofs) {
-        Buf_eat(s->bufobj, ofs);
-        level = (bits - s->basebits) / s->fanbits;
-        memcpy(retval->buf, bufpeekbytes, ofs);
-        retval->len = ofs;
-        retval->level = level;
-        return 0;
-    } else {
+    if (!bufpeeklen)
         return 1;
+    rollsum_init(&s->roll);
+    ofs = bupsplit_next_ofs(&s->roll, bufpeekbytes, bufpeeklen, &bits);
+
+    // Didn't find a split point, i.e. hit BLOB_MAX bytes or end of buffer
+    if (!ofs) {
+        ofs = bufpeeklen;
+        bits = 0;
+        level = 0;
     }
+
+    Buf_eat(s->bufobj, ofs);
+    if (bits) {
+        assert(bits >= BUP_BLOBBITS);
+        level = (bits - s->basebits) / s->fanbits;
+    }
+    memcpy(retval->buf, bufpeekbytes, ofs);
+    retval->len = ofs;
+    retval->level = level;
+    return 0;
 }
 
 static splitbuf_state *
 splitbuf_new(Buf *bufobj, int basebits, int fanbits)
 {
+    assert(BLOB_MAX <= INT_MAX);
     splitbuf_state *s = calloc(1, sizeof(splitbuf_state));
-    rollsum_init(&s->roll);
     s->bufobj = bufobj;
     s->basebits = basebits;
     s->fanbits = fanbits;
@@ -361,27 +358,6 @@ static PyObject* hashsplit_iter_iternext(PyObject *self)
     hashsplit_iter_state *s = (hashsplit_iter_state *)self;
 
     while (1) {
-
-        // End of the line for this iterator
-        if (s->readfile_iter == NULL && s->splitbuf == NULL) {
-            if (s->bufobj == NULL) {
-                // TODO: do we need to check for error?
-                if (PyErr_Occurred() == NULL) {
-                    PyErr_SetNone(PyExc_StopIteration);
-                }
-                return NULL;
-            }
-            size_t used = Buf_used(s->bufobj);
-            s->ret.level = 0;
-            Buf_get(s->bufobj, used, s->ret.buf, &s->ret.len);
-            Buf_del(s->bufobj);
-            s->bufobj = NULL;
-
-            PyObject *tmpbuf = PyBuffer_FromMemory(s->ret.buf, s->ret.len);
-            return Py_BuildValue("Ni", tmpbuf, s->ret.level);
-            //return Py_BuildValue("s#i", s->ret.buf, s->ret.len, s->ret.level);
-        }
-
         // Fill up buffer to ensure we never terminate our roll before finding
         // an ofs
         if (Buf_used(s->bufobj) < BLOB_MAX && s->readfile_iter != NULL) {
@@ -404,13 +380,12 @@ static PyObject* hashsplit_iter_iternext(PyObject *self)
 
         if (splitbuf_iternext(s->splitbuf, &s->ret) == 1) {
             /* Don't recurse (to avoid stack overflow), loop instead */
-            splitbuf_del(s->splitbuf);
-            s->splitbuf = NULL;
-        } else {
-            PyObject *tmpbuf = PyBuffer_FromMemory(s->ret.buf, s->ret.len);
-            return Py_BuildValue("Ni", tmpbuf, s->ret.level);
-            //return Py_BuildValue("s#i", s->ret.buf, s->ret.len, s->ret.level);
+            PyErr_SetNone(PyExc_StopIteration);
+            return NULL;
         }
+        PyObject *tmpbuf = PyBuffer_FromMemory(s->ret.buf, s->ret.len);
+        return Py_BuildValue("Ni", tmpbuf, s->ret.level);
+        //return Py_BuildValue("s#i", s->ret.buf, s->ret.len, s->ret.level);
     }
 }
 
@@ -491,12 +466,8 @@ static void
 hashsplit_iter_dealloc(PyObject *iterstate)
 {
     hashsplit_iter_state *state = (hashsplit_iter_state *)iterstate;
-    if (state->splitbuf != NULL) {
-        splitbuf_del(state->splitbuf);
-    }
-    if (state->bufobj != NULL) {
-        Buf_del(state->bufobj);
-    }
+    splitbuf_del(state->splitbuf);
+    Buf_del(state->bufobj);
     Py_DECREF(state->progressfn);
     Py_DECREF(state->files);
     Py_XDECREF(state->readfile_iter);
