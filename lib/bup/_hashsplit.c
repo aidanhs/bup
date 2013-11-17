@@ -405,50 +405,50 @@ hashsplit_iter_new(PyTypeObject *type, PyObject *args, PyObject *kwargs)
     if (helpersstr == NULL)
         return NULL;
     PyObject *helpersmod = PyImport_Import(helpersstr);
+    Py_DECREF(helpersstr);
     if (helpersmod == NULL)
         return NULL;
     PyObject *basebitsobj = PyObject_CallMethod(helpersmod, "blobbits", NULL);
+    Py_DECREF(helpersmod);
     if (basebitsobj == NULL)
         return NULL;
     long basebits = PyInt_AsLong(basebitsobj);
+    Py_DECREF(basebitsobj);
     if (basebits == -1)
         return NULL;
-    Py_DECREF(basebitsobj);
-    Py_DECREF(helpersstr);
-    Py_DECREF(helpersmod);
 
     PyObject *mathstr = PyString_FromString("math");
     if (mathstr == NULL)
         return NULL;
     PyObject *mathmod = PyImport_Import(mathstr);
+    Py_DECREF(mathstr);
     if (mathmod == NULL)
         return NULL;
     PyObject *fanbitsobj = PyObject_CallMethod(mathmod, "log", "ii", FANOUT, 2);
+    Py_DECREF(mathmod);
     if (fanbitsobj == NULL)
         return NULL;
     PyObject *fanbitsintobj = PyNumber_Int(fanbitsobj);
+    Py_DECREF(fanbitsobj);
     if (fanbitsintobj == NULL)
         return NULL;
     long fanbits = PyInt_AsLong(fanbitsintobj);
+    Py_DECREF(fanbitsintobj);
     if (fanbits == -1)
         return NULL;
-    Py_DECREF(fanbitsintobj);
-    Py_DECREF(fanbitsobj);
-    Py_DECREF(mathstr);
-    Py_DECREF(mathmod);
 
     PyObject *hsstr = PyString_FromString("bup.hashsplit");
     if (hsstr == NULL)
         return NULL;
     PyObject *hsmod = PyImport_Import(hsstr);
+    Py_DECREF(hsstr);
     if (hsmod == NULL)
         return NULL;
     PyObject *readfile_iterobj = PyObject_CallMethod(
         hsmod, "readfile_iter", "OO", files, progressfn);
+    Py_DECREF(hsmod);
     if (readfile_iterobj == NULL)
         return NULL;
-    Py_DECREF(hsstr);
-    Py_DECREF(hsmod);
 
     Buf *bufobj = Buf_new();
 
