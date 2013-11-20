@@ -257,18 +257,9 @@ static void Buf_peek (Buf *b, size_t count, unsigned char *target, size_t *got)
 static void Buf_put (Buf *b, unsigned char *putsrc, size_t putlen)
 {
     if (b->start + b->len + putlen > b->buf + b->size) {
-        size_t newsize;
-        if (b->len + putlen > b->size) {
-            newsize = b->len + putlen;
-        } else {
-            newsize = b->size;
-        }
-        unsigned char* newbuf = malloc(newsize);
-        memmove(newbuf, b->start, b->len);
-        free(b->buf);
-        b->buf = newbuf;
+        assert(b->len + putlen <= b->size);
+        memmove(b->buf, b->start, b->len);
         b->start = b->buf;
-        b->size = b->len + putlen;
     }
     memcpy(b->start + b->len, putsrc, putlen);
     b->len += putlen;
