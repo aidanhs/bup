@@ -54,6 +54,7 @@ static void rollsum_add(Rollsum *r, uint8_t drop, uint8_t add)
     r->s2 += r->s1 - (BUP_WINDOWSIZE * (drop + ROLLSUM_CHAR_OFFSET));
 }
 
+static int wofslookup[BUP_WINDOWSIZE];
 
 static void rollsum_init(Rollsum *r)
 {
@@ -61,6 +62,11 @@ static void rollsum_init(Rollsum *r)
     r->s2 = BUP_WINDOWSIZE * (BUP_WINDOWSIZE-1) * ROLLSUM_CHAR_OFFSET;
     r->wofs = 0;
     memset(r->window, 0, BUP_WINDOWSIZE);
+
+    int i;
+    for (i = 0; i < BUP_WINDOWSIZE; i++) {
+        wofslookup[i] = (i + 1) % BUP_WINDOWSIZE;
+    }
 }
 
 
@@ -68,9 +74,10 @@ static void rollsum_init(Rollsum *r)
 // is static and rollsum_roll is an inline function.  Let's use a macro
 // here instead to help out the optimizer.
 #define rollsum_roll(r, ch) do { \
-    rollsum_add((r), (r)->window[(r)->wofs], (ch)); \
-    (r)->window[(r)->wofs] = (ch); \
-    (r)->wofs = ((r)->wofs + 1) % BUP_WINDOWSIZE; \
+    int wofs = (r)->wofs; \
+    rollsum_add((r), (r)->window[wofs], (ch)); \
+    (r)->window[wofs] = (ch); \
+    (r)->wofs = wofslookup[wofs]; \
 } while (0)
 
 
