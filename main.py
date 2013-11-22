@@ -30,7 +30,7 @@ from bup.helpers import *
 os.environ['WIDTH'] = str(tty_width())
 
 def usage(msg=""):
-    log('Usage: bup [-?|--help] [-d BUP_DIR] [--debug] [--profile] '
+    log('Usage: bup [-?|--help] [-d BUP_DIR] [--debug] [--profile[=out_file]] '
         '<command> [options...]\n\n')
     common = dict(
         ftp = 'Browse backup sets using an ftp-like client',
@@ -71,11 +71,25 @@ if len(argv) < 2:
     usage()
 
 # Handle global options.
-try:
-    optspec = ['help', 'version', 'debug', 'profile', 'bup-dir=']
-    global_args, subcmd = getopt.getopt(argv[1:], '?VDd:', optspec)
-except getopt.GetoptError, ex:
-    usage('error: %s' % ex.msg)
+# Getopt doesn't support optional argument parameters and disambiguating
+# is tricky with spaces involved because we have subcommands. So only allow
+# '=' separated optional parameters
+shortopts = '?VDd:'
+longopts = ['help', 'version', 'debug', 'bup-dir=']
+param_optional = ['profile']
+gotargs = False
+longopts = longopts + param_optional
+while not gotargs:
+    try:
+        global_args, subcmd = getopt.getopt(argv[1:], shortopts, longopts)
+        gotargs = True
+    except getopt.GetoptError, ex:
+        if (ex.opt in param_optional and
+                ex.msg.endswith('must not have an argument')):
+            longopts.remove(ex.opt)
+            longopts.append(ex.opt + '=')
+        else:
+            usage('error: %s' % ex.msg)
 
 help_requested = None
 do_profile = False
@@ -90,6 +104,7 @@ for opt in global_args:
         os.environ['BUP_DEBUG'] = str(helpers.buglvl)
     elif opt[0] in ['--profile']:
         do_profile = True
+        do_profile_out = opt[1]
     elif opt[0] in ['-d', '--bup-dir']:
         os.environ['BUP_DIR'] = opt[1]
     else:
@@ -176,7 +191,12 @@ signal.signal(signal.SIGCONT, handler)
 
 try:
     try:
-        c = (do_profile and [sys.executable, '-m', 'cProfile'] or []) + subcmd
+        c = []
+        if do_profile:
+            c += [sys.executable, '-m', 'cProfile']
+            if do_profile_out:
+                c += ['-o', do_profile_out]
+        c += subcmd
         if not n and not outf and not errf:
             # shortcut when no bup-newliner stuff is needed
             os.execvp(c[0], c)

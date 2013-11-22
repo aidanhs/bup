@@ -36,6 +36,11 @@ pages.
     environment variable or using the default `~/.bup`
     location.
 
+\--profile[=*out_file*]
+:   profile this run of bup, either pretty printing to
+    stdout or saving the raw output to a file for
+    inspection with the Python `pstats` module
+
 
 # COMMONLY USED SUBCOMMANDS
 
