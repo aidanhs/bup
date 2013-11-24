@@ -117,7 +117,6 @@ int bupsplit_next_ofs(Rollsum *r, const unsigned char *buf, int len, int *bits)
         if ((r->s2 & (BUP_BLOBSIZE-1)) == ((~0) & (BUP_BLOBSIZE-1))) {
             if (bits) {
                 unsigned rsum = rollsum_digest(r);
-                *bits = BUP_BLOBBITS;
                 rsum >>= BUP_BLOBBITS;
                 for (*bits = BUP_BLOBBITS; (rsum >>= 1) & 1; (*bits)++)
                     ;
