@@ -36,10 +36,10 @@ typedef struct {
     PyObject *progressfn;
     Py_ssize_t prevread;
     char buf[BLOB_READ_SIZE];
-} readfile_iter_state;
+} readiter_state;
 
 // Return -1 if the next file cannot be obtained (end of iter or error)
-static int next_file(readfile_iter_state *s)
+static int next_file(readiter_state *s)
 {
     PyObject *fdobj;
     Py_XDECREF(s->curfile);
@@ -72,13 +72,11 @@ static void fadvise_done(int fd, ssize_t ofs)
 }
 
 /* Note we don't report progress when looping as we won't have read any bytes */
-static PyObject* readfile_iter_iternext(PyObject *self)
+static int readiter_iternext(readiter_state *s, unsigned char *buf, ssize_t *len)
 {
-    readfile_iter_state *s;
     ssize_t bytes_read;
     PyObject *bytesobj = NULL;
 
-    s = (readfile_iter_state *)self;
     if (s->progressfn != NULL)
         PyObject_CallFunction(s->progressfn, "nn", s->filenum, s->prevread);
     if (s->ofs > 1024*1024)
@@ -92,48 +90,43 @@ static PyObject* readfile_iter_iternext(PyObject *self)
             bytesobj = PyObject_CallMethod(
                 s->curfile, "read", "n", BLOB_READ_SIZE, NULL);
             if (bytesobj == NULL)
-                return NULL;
+                return 0;
             bytes_read = PyString_GET_SIZE(bytesobj);
         }
         if (bytes_read > 0) {
             s->prevread = bytes_read;
             s->ofs += bytes_read;
             if (realfile) {
-                return Py_BuildValue("s#", s->buf, bytes_read);
+                memcpy(buf, s->buf, bytes_read);
+                *len = bytes_read;
             } else {
-                return bytesobj;
+                char *inbuf;
+                Py_ssize_t inlen;
+                if (PyString_AsStringAndSize(
+                        bytesobj, &inbuf, &inlen) == -1)
+                    return 0;
+                memcpy(buf, inbuf, inlen);
+                *len = inlen;
+                Py_DECREF(bytesobj);
             }
+            return 1;
         } else if (bytes_read == 0) {
             if (realfile)
                 fadvise_done(s->fd, s->ofs);
-            if (next_file(s) != -1) { /* End of file */
-                s->ofs = 0;
-                s->filenum++;
-                /* Don't recurse to avoid stack overflow, loop instead */
-            } else {
-                // TODO: do we need to check for error?
-                if (PyErr_Occurred() == NULL)
-                    PyErr_SetNone(PyExc_StopIteration);
-                return NULL;
-            }
+            if (next_file(s) == -1)
+                return 0;
+            s->ofs = 0;
+            s->filenum++;
+            /* Don't recurse to avoid stack overflow, loop instead */
         } else {
             PyErr_SetString(PyExc_IOError, "failed to read file");
-            return NULL;
+            return 0;
         }
     }
 }
 
-static PyObject *
-readfile_iter_new(PyTypeObject *type, PyObject *args, PyObject *kwargs)
+static readiter_state *readiter_new(PyObject *iterarg, PyObject *progressfn)
 {
-    PyObject *iterarg;
-    PyObject *progressfn = NULL;
-
-    char *kw[] = {"files", "progress", NULL};
-    if (!PyArg_ParseTupleAndKeywords(
-            args, kwargs, "O|O:readfile_iter", kw, &iterarg, &progressfn))
-        return NULL;
-
     /* We expect an argument that supports the iterator protocol, but we might
      * need to convert it from e.g. a list first
      */
@@ -325,8 +318,7 @@ static int splitbuf_iternext(splitbuf_state *s, buf_and_level *retval)
     return 0;
 }
 
-static splitbuf_state *
-splitbuf_new(Buf *bufobj, int basebits, int fanbits)
+static splitbuf_state *splitbuf_new(Buf *bufobj, int basebits, int fanbits)
 {
     assert(BLOB_MAX <= INT_MAX);
     splitbuf_state *s = calloc(1, sizeof(splitbuf_state));
@@ -336,8 +328,7 @@ splitbuf_new(Buf *bufobj, int basebits, int fanbits)
     return s;
 }
 
-static void
-splitbuf_del(splitbuf_state *s)
+static void splitbuf_del(splitbuf_state *s)
 {
     free(s);
 }
@@ -352,8 +343,9 @@ typedef struct {
     PyObject *progressfn;
     PyObject *files;
     Buf *bufobj;
+    int readiter_done;
     // For holding iterator states
-    PyObject *readfile_iter;
+    readiter_state *readiter;
     splitbuf_state *splitbuf;
     // For building return value
     buf_and_level ret;
@@ -366,21 +358,17 @@ static PyObject* hashsplit_iter_iternext(PyObject *self)
     while (1) {
         // Fill up buffer to ensure we never terminate our roll before finding
         // an ofs
-        while (Buf_used(s->bufobj) < BLOB_MAX && s->readfile_iter != NULL) {
-            PyObject *inblock = PyIter_Next(s->readfile_iter);
-            if (inblock == NULL) {
+        while (Buf_used(s->bufobj) < BLOB_MAX && !s->readiter_done) {
+            unsigned char tmpbuf[BLOB_READ_SIZE];
+            ssize_t tmplen;
+            if (readiter_iternext(s->readiter, tmpbuf, &tmplen) == 0) {
                 if (PyErr_Occurred()) {
                     return NULL;
                 } else {
-                    Py_DECREF(s->readfile_iter);
-                    s->readfile_iter = NULL;
+                    s->readiter_done = 1;
                 }
             } else {
-                char *tmpbuf;
-                ssize_t tmplen;
-                PyString_AsStringAndSize(inblock, &tmpbuf, &tmplen);
-                Buf_put(s->bufobj, (unsigned char *)tmpbuf, tmplen);
-                Py_DECREF(inblock);
+                Buf_put(s->bufobj, tmpbuf, tmplen);
             }
         }
 
@@ -439,9 +427,8 @@ hashsplit_iter_new(PyTypeObject *type, PyObject *args, PyObject *kwargs)
     if (fanbits == -1)
         return NULL;
 
-    PyObject *readfile_iterobj = PyObject_CallMethod(
-        imports.hashsplit, "readfile_iter", "OO", files, progressfn);
-    if (readfile_iterobj == NULL)
+    readiter_state *readiter = readiter_new(files, progressfn);
+    if (readiter == NULL)
         return NULL;
 
     Buf *bufobj = Buf_new();
@@ -450,21 +437,21 @@ hashsplit_iter_new(PyTypeObject *type, PyObject *args, PyObject *kwargs)
     state->progressfn = progressfn;
     state->files = files;
     state->bufobj = bufobj;
+    state->readiter_done = 0;
     state->splitbuf = splitbuf_new(bufobj, basebits, fanbits);
-    state->readfile_iter = readfile_iterobj;
+    state->readiter = readiter;
 
     return (PyObject *)state;
 }
 
-static void
-hashsplit_iter_dealloc(PyObject *iterstate)
+static void hashsplit_iter_dealloc(PyObject *iterstate)
 {
     hashsplit_iter_state *state = (hashsplit_iter_state *)iterstate;
     splitbuf_del(state->splitbuf);
+    readiter_del(state->readiter);
     Buf_del(state->bufobj);
     Py_DECREF(state->progressfn);
     Py_DECREF(state->files);
-    Py_XDECREF(state->readfile_iter);
     Py_TYPE(iterstate)->tp_free(iterstate);
 }
 
@@ -551,14 +538,10 @@ PyMODINIT_FUNC init_hashsplit(void)
         return;
     imports.hashsplit = hsmod;
 
-    if (PyType_Ready(&readfile_iter) < 0)
-        return;
     if (PyType_Ready(&hashsplit_iter) < 0)
         return;
-    Py_INCREF((PyObject *)&readfile_iter);
     Py_INCREF((PyObject *)&hashsplit_iter);
     // TODO: check for error below
     // TODO: double check all Py_INCREFs look reasonable
-    PyModule_AddObject(m, "readfile_iter", (PyObject *)&readfile_iter);
     PyModule_AddObject(m, "_hashsplit_iter", (PyObject *)&hashsplit_iter);
 }
