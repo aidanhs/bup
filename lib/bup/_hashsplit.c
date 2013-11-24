@@ -35,7 +35,6 @@ typedef struct {
     PyObject *fileiter;
     PyObject *progressfn;
     Py_ssize_t prevread;
-    char buf[BLOB_READ_SIZE];
 } readiter_state;
 
 // Return -1 if the next file cannot be obtained (end of iter or error)
@@ -74,43 +73,45 @@ static void fadvise_done(int fd, ssize_t ofs)
 /* Note we don't report progress when looping as we won't have read any bytes */
 static int readiter_iternext(readiter_state *s, unsigned char *buf, ssize_t *len)
 {
-    ssize_t bytes_read;
     PyObject *bytesobj = NULL;
 
-    if (s->progressfn != NULL)
-        PyObject_CallFunction(s->progressfn, "nn", s->filenum, s->prevread);
+    if (s->progressfn != NULL) {
+        PyObject *tmp = PyObject_CallFunction(
+            s->progressfn, "nn", s->filenum, s->prevread);
+        if (tmp == NULL)
+            return 0;
+        Py_DECREF(tmp);
+    }
     if (s->ofs > 1024*1024)
         fadvise_done(s->fd, s->ofs - 1024*1024);
 
     while (1) {
         int realfile = (s->fd != -1);
         if (realfile) {
-            bytes_read = read(s->fd, s->buf, BLOB_READ_SIZE);
+            *len = read(s->fd, buf, BLOB_READ_SIZE);
         } else { /* Not a real file TODO: use PyObject_CallMethodObjArgs */
             bytesobj = PyObject_CallMethod(
                 s->curfile, "read", "n", BLOB_READ_SIZE, NULL);
             if (bytesobj == NULL)
                 return 0;
-            bytes_read = PyString_GET_SIZE(bytesobj);
+            *len = PyString_GET_SIZE(bytesobj);
         }
-        if (bytes_read > 0) {
-            s->prevread = bytes_read;
-            s->ofs += bytes_read;
-            if (realfile) {
-                memcpy(buf, s->buf, bytes_read);
-                *len = bytes_read;
-            } else {
+
+        if (*len > 0) {
+            s->prevread = *len;
+            s->ofs += *len;
+            if (!realfile) {
                 char *inbuf;
                 Py_ssize_t inlen;
                 if (PyString_AsStringAndSize(
                         bytesobj, &inbuf, &inlen) == -1)
                     return 0;
                 memcpy(buf, inbuf, inlen);
-                *len = inlen;
                 Py_DECREF(bytesobj);
+                assert(inlen == *len);
             }
             return 1;
-        } else if (bytes_read == 0) {
+        } else if (*len == 0) {
             if (realfile)
                 fadvise_done(s->fd, s->ofs);
             if (next_file(s) == -1)
@@ -149,79 +150,30 @@ static readiter_state *readiter_new(PyObject *iterarg, PyObject *progressfn)
         return NULL;
     }
 
-    readfile_iter_state *state =
-        (readfile_iter_state *)type->tp_alloc(type, 0);
-    if (!state)
-        return NULL;
+    readiter_state *s = calloc(1, sizeof(readiter_state));
 
-    state->fileiter = fileiter;
-    state->ofs = 0;
-    state->filenum = 0;
-    state->progressfn = progressfn;
-    state->prevread = 0;
-    state->curfile = NULL;
+    s->fileiter = fileiter;
+    s->ofs = 0;
+    s->filenum = 0;
+    s->progressfn = progressfn;
+    s->prevread = 0;
+    s->curfile = NULL;
     /* Will initialise fd and curfile with the first file */
-    if (next_file(state) == -1)
+    if (next_file(s) == -1)
         return NULL;
 
     Py_INCREF(fileiter);
     Py_XINCREF(progressfn);
 
-    return (PyObject *)state;
+    return s;
 }
 
-static void
-readfile_iter_dealloc(PyObject *iterstate)
+static void readiter_del(readiter_state *s)
 {
-    readfile_iter_state *state = (readfile_iter_state *)iterstate;
-    Py_DECREF(state->fileiter);
-    Py_XDECREF(state->curfile);
-    Py_XDECREF(state->progressfn);
-    Py_TYPE(iterstate)->tp_free(iterstate);
+    Py_DECREF(s->fileiter);
+    Py_XDECREF(s->curfile);
+    Py_XDECREF(s->progressfn);
 }
-
-static PyTypeObject readfile_iter = {
-    PyObject_HEAD_INIT(NULL)
-    0,                         /* ob_size */
-    "readfile_iter",           /* tp_name */
-    sizeof(readfile_iter_state), /* tp_basicsize */
-    0,                         /* tp_itemsize */
-    readfile_iter_dealloc,     /* tp_dealloc */
-    0,                         /* tp_print */
-    0,                         /* tp_getattr */
-    0,                         /* tp_setattr */
-    0,                         /* tp_compare */
-    0,                         /* tp_repr */
-    0,                         /* tp_as_number */
-    0,                         /* tp_as_sequence */
-    0,                         /* tp_as_mapping */
-    0,                         /* tp_hash */
-    0,                         /* tp_call */
-    0,                         /* tp_str */
-    0,                         /* tp_getattro */
-    0,                         /* tp_setattro */
-    0,                         /* tp_as_buffer */
-    Py_TPFLAGS_DEFAULT,        /* tp_flags */
-    0,                         /* tp_doc */
-    0,                         /* tp_traverse */
-    0,                         /* tp_clear */
-    0,                         /* tp_richcompare */
-    0,                         /* tp_weaklistoffset */
-    PyObject_SelfIter,         /* tp_iter */
-    readfile_iter_iternext,    /* tp_iternext */
-    0,                         /* tp_methods */
-    0,                         /* tp_members */
-    0,                         /* tp_getset */
-    0,                         /* tp_base */
-    0,                         /* tp_dict */
-    0,                         /* tp_descr_get */
-    0,                         /* tp_descr_set */
-    0,                         /* tp_dictoffset */
-    0,                         /* tp_init */
-    PyType_GenericAlloc,       /* tp_alloc */
-    readfile_iter_new          /* tp_new */
-};
-
 
 /********************************************************/
 /********************************************************/
@@ -296,7 +248,7 @@ static int splitbuf_iternext(splitbuf_state *s, buf_and_level *retval)
     unsigned char bufpeekbytes[BLOB_MAX];
     Buf_peek(s->bufobj, BLOB_MAX, bufpeekbytes, &bufpeeklen);
     if (!bufpeeklen)
-        return 1;
+        return 0;
     rollsum_init(&s->roll);
     ofs = bupsplit_next_ofs(&s->roll, bufpeekbytes, bufpeeklen, &bits);
 
@@ -315,7 +267,7 @@ static int splitbuf_iternext(splitbuf_state *s, buf_and_level *retval)
     memcpy(retval->buf, bufpeekbytes, ofs);
     retval->len = ofs;
     retval->level = level;
-    return 0;
+    return 1;
 }
 
 static splitbuf_state *splitbuf_new(Buf *bufobj, int basebits, int fanbits)
@@ -344,6 +296,7 @@ typedef struct {
     PyObject *files;
     Buf *bufobj;
     int readiter_done;
+    unsigned char readbuf[BLOB_READ_SIZE];
     // For holding iterator states
     readiter_state *readiter;
     splitbuf_state *splitbuf;
@@ -359,20 +312,19 @@ static PyObject* hashsplit_iter_iternext(PyObject *self)
         // Fill up buffer to ensure we never terminate our roll before finding
         // an ofs
         while (Buf_used(s->bufobj) < BLOB_MAX && !s->readiter_done) {
-            unsigned char tmpbuf[BLOB_READ_SIZE];
             ssize_t tmplen;
-            if (readiter_iternext(s->readiter, tmpbuf, &tmplen) == 0) {
+            if (!readiter_iternext(s->readiter, s->readbuf, &tmplen)) {
                 if (PyErr_Occurred()) {
                     return NULL;
                 } else {
                     s->readiter_done = 1;
                 }
             } else {
-                Buf_put(s->bufobj, tmpbuf, tmplen);
+                Buf_put(s->bufobj, s->readbuf, tmplen);
             }
         }
 
-        if (splitbuf_iternext(s->splitbuf, &s->ret) == 1) {
+        if (!splitbuf_iternext(s->splitbuf, &s->ret)) {
             /* Don't recurse (to avoid stack overflow), loop instead */
             PyErr_SetNone(PyExc_StopIteration);
             return NULL;
