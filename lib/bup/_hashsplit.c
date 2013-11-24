@@ -9,9 +9,9 @@
 
 #include "bupsplit.h"
 
+// TODO: these shouldn't be #defined, get them from hashsplit module
 #define BLOB_READ_SIZE 1024*1024
 #define BLOB_MAX 8192*4
-#define FANOUT 16
 
 typedef struct {
     PyObject_HEAD
@@ -351,7 +351,7 @@ static PyObject* hashsplit_iter_iternext(PyObject *self)
     while (1) {
         // Fill up buffer to ensure we never terminate our roll before finding
         // an ofs
-        if (Buf_used(s->bufobj) < BLOB_MAX && s->readfile_iter != NULL) {
+        while (Buf_used(s->bufobj) < BLOB_MAX && s->readfile_iter != NULL) {
             PyObject *inblock = PyIter_Next(s->readfile_iter);
             if (inblock == NULL) {
                 if (PyErr_Occurred()) {
@@ -385,7 +385,10 @@ hashsplit_iter_new(PyTypeObject *type, PyObject *args, PyObject *kwargs)
 {
     PyObject *progressfn;
     PyObject *files;
-    if (!PyArg_ParseTuple(args, "OO:hashsplit_iter", &files, &progressfn))
+
+    char *kw[] = {"files", "progress", NULL};
+    if (!PyArg_ParseTupleAndKeywords(
+            args, kwargs, "OO:_hashsplit_iter", kw, &files, &progressfn))
         return NULL;
 
     hashsplit_iter_state *state = (hashsplit_iter_state *)type->tp_alloc(type, 0);
@@ -408,6 +411,14 @@ hashsplit_iter_new(PyTypeObject *type, PyObject *args, PyObject *kwargs)
     if (basebits == -1)
         return NULL;
 
+    PyObject *hsstr = PyString_FromString("bup.hashsplit");
+    if (hsstr == NULL)
+        return NULL;
+    PyObject *hsmod = PyImport_Import(hsstr);
+    Py_DECREF(hsstr);
+    if (hsmod == NULL)
+        return NULL;
+
     PyObject *mathstr = PyString_FromString("math");
     if (mathstr == NULL)
         return NULL;
@@ -415,7 +426,16 @@ hashsplit_iter_new(PyTypeObject *type, PyObject *args, PyObject *kwargs)
     Py_DECREF(mathstr);
     if (mathmod == NULL)
         return NULL;
-    PyObject *fanbitsobj = PyObject_CallMethod(mathmod, "log", "ii", FANOUT, 2);
+    PyObject *fanoutobj = PyObject_GetAttrString(hsmod, "fanout");
+    if (fanoutobj == NULL)
+        return NULL;
+    long fanout = PyInt_AsLong(fanoutobj);
+    Py_DECREF(fanoutobj);
+    if (fanout == -1)
+        return NULL;
+    if (!fanout)
+        fanout = 128;
+    PyObject *fanbitsobj = PyObject_CallMethod(mathmod, "log", "ii", fanout, 2);
     Py_DECREF(mathmod);
     if (fanbitsobj == NULL)
         return NULL;
@@ -428,13 +448,6 @@ hashsplit_iter_new(PyTypeObject *type, PyObject *args, PyObject *kwargs)
     if (fanbits == -1)
         return NULL;
 
-    PyObject *hsstr = PyString_FromString("bup.hashsplit");
-    if (hsstr == NULL)
-        return NULL;
-    PyObject *hsmod = PyImport_Import(hsstr);
-    Py_DECREF(hsstr);
-    if (hsmod == NULL)
-        return NULL;
     PyObject *readfile_iterobj = PyObject_CallMethod(
         hsmod, "readfile_iter", "OO", files, progressfn);
     Py_DECREF(hsmod);
