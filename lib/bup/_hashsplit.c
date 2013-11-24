@@ -13,6 +13,18 @@
 #define BLOB_READ_SIZE 1024*1024
 #define BLOB_MAX 8192*4
 
+// Module-wide imports, never collected
+static struct {
+    PyObject *math;
+    PyObject *helpers;
+    PyObject *hashsplit; // The python module
+} imports;
+
+
+/********************************************************/
+/********************************************************/
+
+
 typedef struct {
     PyObject_HEAD
     ssize_t ofs;
@@ -217,8 +229,10 @@ static PyTypeObject readfile_iter = {
     readfile_iter_new          /* tp_new */
 };
 
+
 /********************************************************/
 /********************************************************/
+
 
 typedef struct {
     unsigned char *buf;
@@ -328,6 +342,7 @@ splitbuf_del(splitbuf_state *s)
     free(s);
 }
 
+
 /********************************************************/
 /********************************************************/
 
@@ -395,15 +410,7 @@ hashsplit_iter_new(PyTypeObject *type, PyObject *args, PyObject *kwargs)
     if (!state)
         return NULL;
 
-    PyObject *helpersstr = PyString_FromString("bup._helpers");
-    if (helpersstr == NULL)
-        return NULL;
-    PyObject *helpersmod = PyImport_Import(helpersstr);
-    Py_DECREF(helpersstr);
-    if (helpersmod == NULL)
-        return NULL;
-    PyObject *basebitsobj = PyObject_CallMethod(helpersmod, "blobbits", NULL);
-    Py_DECREF(helpersmod);
+    PyObject *basebitsobj = PyObject_CallMethod(imports.helpers, "blobbits", NULL);
     if (basebitsobj == NULL)
         return NULL;
     long basebits = PyInt_AsLong(basebitsobj);
@@ -411,22 +418,7 @@ hashsplit_iter_new(PyTypeObject *type, PyObject *args, PyObject *kwargs)
     if (basebits == -1)
         return NULL;
 
-    PyObject *hsstr = PyString_FromString("bup.hashsplit");
-    if (hsstr == NULL)
-        return NULL;
-    PyObject *hsmod = PyImport_Import(hsstr);
-    Py_DECREF(hsstr);
-    if (hsmod == NULL)
-        return NULL;
-
-    PyObject *mathstr = PyString_FromString("math");
-    if (mathstr == NULL)
-        return NULL;
-    PyObject *mathmod = PyImport_Import(mathstr);
-    Py_DECREF(mathstr);
-    if (mathmod == NULL)
-        return NULL;
-    PyObject *fanoutobj = PyObject_GetAttrString(hsmod, "fanout");
+    PyObject *fanoutobj = PyObject_GetAttrString(imports.hashsplit, "fanout");
     if (fanoutobj == NULL)
         return NULL;
     long fanout = PyInt_AsLong(fanoutobj);
@@ -435,8 +427,7 @@ hashsplit_iter_new(PyTypeObject *type, PyObject *args, PyObject *kwargs)
         return NULL;
     if (!fanout)
         fanout = 128;
-    PyObject *fanbitsobj = PyObject_CallMethod(mathmod, "log", "ii", fanout, 2);
-    Py_DECREF(mathmod);
+    PyObject *fanbitsobj = PyObject_CallMethod(imports.math, "log", "ii", fanout, 2);
     if (fanbitsobj == NULL)
         return NULL;
     PyObject *fanbitsintobj = PyNumber_Int(fanbitsobj);
@@ -449,8 +440,7 @@ hashsplit_iter_new(PyTypeObject *type, PyObject *args, PyObject *kwargs)
         return NULL;
 
     PyObject *readfile_iterobj = PyObject_CallMethod(
-        hsmod, "readfile_iter", "OO", files, progressfn);
-    Py_DECREF(hsmod);
+        imports.hashsplit, "readfile_iter", "OO", files, progressfn);
     if (readfile_iterobj == NULL)
         return NULL;
 
@@ -479,8 +469,7 @@ hashsplit_iter_dealloc(PyObject *iterstate)
 }
 
 static PyTypeObject hashsplit_iter = {
-    PyObject_HEAD_INIT(NULL)
-    0,                         /* ob_size */
+    PyVarObject_HEAD_INIT(NULL, 0)
     "_hashsplit_iter",         /* tp_name */
     sizeof(hashsplit_iter_state), /* tp_basicsize */
     0,                         /* tp_itemsize */
@@ -524,6 +513,7 @@ static PyTypeObject hashsplit_iter = {
 /********************************************************/
 /********************************************************/
 
+
 static PyMethodDef hashsplit_methods[] = {
     { NULL, NULL, 0, NULL },  // sentinel
 };
@@ -533,6 +523,33 @@ PyMODINIT_FUNC init_hashsplit(void)
     PyObject *m = Py_InitModule("_hashsplit", hashsplit_methods);
     if (m == NULL)
         return;
+
+    PyObject *helpersstr = PyString_FromString("bup._helpers");
+    if (helpersstr == NULL)
+        return;
+    PyObject *helpersmod = PyImport_Import(helpersstr);
+    Py_DECREF(helpersstr);
+    if (helpersmod == NULL)
+        return;
+    imports.helpers = helpersmod;
+
+    PyObject *mathstr = PyString_FromString("math");
+    if (mathstr == NULL)
+        return;
+    PyObject *mathmod = PyImport_Import(mathstr);
+    Py_DECREF(mathstr);
+    if (mathmod == NULL)
+        return;
+    imports.math = mathmod;
+
+    PyObject *hsstr = PyString_FromString("bup.hashsplit");
+    if (hsstr == NULL)
+        return;
+    PyObject *hsmod = PyImport_Import(hsstr);
+    Py_DECREF(hsstr);
+    if (hsmod == NULL)
+        return;
+    imports.hashsplit = hsmod;
 
     if (PyType_Ready(&readfile_iter) < 0)
         return;
