@@ -179,11 +179,19 @@ static void readiter_del(readiter_state *s)
 /********************************************************/
 
 
+// https://github.com/cloudwu/pbc - A protocol buffers library for C
+// http://stackoverflow.com/questions/11334226/find-good-buffer-library-in-c
+// http://contiki.sourceforge.net/docs/2.6/a01686.html
+// http://www.embedded.com/electronics-blogs/embedded-round-table/4419407/The-ring-buffer
+// http://www.fourwalledcubicle.com/files/LightweightRingBuff.h
+// http://atastypixel.com/blog/a-simple-fast-circular-buffer-implementation-for-audio-processing/
+// http://nadeausoftware.com/articles/2012/05/c_c_tip_how_copy_memory_quickly
+// http://nadeausoftware.com/articles/2012/03/c_c_tip_how_measure_cpu_time_benchmarking
 typedef struct {
     unsigned char *buf;
     size_t size; // actual size of buf
     unsigned char *start;
-    size_t len;
+    size_t len; // length of buffer with a value
 } Buf;
 static Buf *Buf_new(void)
 {
