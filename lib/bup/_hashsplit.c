@@ -243,6 +243,10 @@ typedef struct {
     int basebits;
     int fanbits;
     Rollsum roll;
+    // For getting new data to roll over
+    readiter_state *readiter;
+    int readiter_done;
+    unsigned char readbuf[BLOB_READ_SIZE];
 } splitbuf_state;
 
 static int splitbuf_iternext(splitbuf_state *s, buf_and_level *retval)
@@ -250,6 +254,21 @@ static int splitbuf_iternext(splitbuf_state *s, buf_and_level *retval)
     size_t bufpeeklen;
     int ofs = 0, bits = -1;
     int level;
+
+    // Fill up buffer to ensure we never terminate our roll before finding
+    // an ofs
+    while (Buf_used(s->bufobj) < BLOB_MAX && !s->readiter_done) {
+        ssize_t tmplen;
+        if (!readiter_iternext(s->readiter, s->readbuf, &tmplen)) {
+            if (PyErr_Occurred()) {
+                return 0;
+            } else {
+                s->readiter_done = 1;
+            }
+        } else {
+            Buf_put(s->bufobj, s->readbuf, tmplen);
+        }
+    }
 
     // Find next split point, stopping at BLOB_MAX or end of buffer (whichever
     // comes first) if we don't find one
@@ -278,18 +297,24 @@ static int splitbuf_iternext(splitbuf_state *s, buf_and_level *retval)
     return 1;
 }
 
-static splitbuf_state *splitbuf_new(Buf *bufobj, int basebits, int fanbits)
+static splitbuf_state *
+splitbuf_new(readiter_state *readiter, int basebits, int fanbits)
 {
     assert(BLOB_MAX <= INT_MAX);
     splitbuf_state *s = calloc(1, sizeof(splitbuf_state));
+    Buf *bufobj = Buf_new();
     s->bufobj = bufobj;
+    s->readiter = readiter;
     s->basebits = basebits;
     s->fanbits = fanbits;
+    s->readiter_done = 0;
     return s;
 }
 
 static void splitbuf_del(splitbuf_state *s)
 {
+    readiter_del(s->readiter);
+    Buf_del(s->bufobj);
     free(s);
 }
 
@@ -302,13 +327,7 @@ typedef struct {
     PyObject_HEAD
     PyObject *progressfn;
     PyObject *files;
-    Buf *bufobj;
-    int readiter_done;
-    unsigned char readbuf[BLOB_READ_SIZE];
-    // For holding iterator states
-    readiter_state *readiter;
     splitbuf_state *splitbuf;
-    // For building return value
     buf_and_level ret;
 } hashsplit_iter_state;
 
@@ -317,21 +336,6 @@ static PyObject* hashsplit_iter_iternext(PyObject *self)
     hashsplit_iter_state *s = (hashsplit_iter_state *)self;
 
     while (1) {
-        // Fill up buffer to ensure we never terminate our roll before finding
-        // an ofs
-        while (Buf_used(s->bufobj) < BLOB_MAX && !s->readiter_done) {
-            ssize_t tmplen;
-            if (!readiter_iternext(s->readiter, s->readbuf, &tmplen)) {
-                if (PyErr_Occurred()) {
-                    return NULL;
-                } else {
-                    s->readiter_done = 1;
-                }
-            } else {
-                Buf_put(s->bufobj, s->readbuf, tmplen);
-            }
-        }
-
         if (!splitbuf_iternext(s->splitbuf, &s->ret)) {
             /* Don't recurse (to avoid stack overflow), loop instead */
             PyErr_SetNone(PyExc_StopIteration);
@@ -391,15 +395,11 @@ hashsplit_iter_new(PyTypeObject *type, PyObject *args, PyObject *kwargs)
     if (readiter == NULL)
         return NULL;
 
-    Buf *bufobj = Buf_new();
-
     Py_INCREF(progressfn);
     state->progressfn = progressfn;
     state->files = files;
-    state->bufobj = bufobj;
-    state->readiter_done = 0;
-    state->splitbuf = splitbuf_new(bufobj, basebits, fanbits);
-    state->readiter = readiter;
+    // The splitbuf owns the readiter now
+    state->splitbuf = splitbuf_new(readiter, basebits, fanbits);
 
     return (PyObject *)state;
 }
@@ -408,8 +408,6 @@ static void hashsplit_iter_dealloc(PyObject *iterstate)
 {
     hashsplit_iter_state *state = (hashsplit_iter_state *)iterstate;
     splitbuf_del(state->splitbuf);
-    readiter_del(state->readiter);
-    Buf_del(state->bufobj);
     Py_DECREF(state->progressfn);
     Py_DECREF(state->files);
     Py_TYPE(iterstate)->tp_free(iterstate);
