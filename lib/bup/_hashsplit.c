@@ -126,30 +126,8 @@ static int readiter_iternext(readiter_state *s, unsigned char *buf, ssize_t *len
     }
 }
 
-static readiter_state *readiter_new(PyObject *iterarg, PyObject *progressfn)
+static readiter_state *readiter_new(PyObject *fileiter, PyObject *progressfn)
 {
-    /* We expect an argument that supports the iterator protocol, but we might
-     * need to convert it from e.g. a list first
-     */
-    PyObject *fileiter = PyObject_GetIter(iterarg);
-    if (fileiter == NULL)
-        return NULL;
-    if (!PyIter_Check(fileiter)) {
-        PyErr_SetString(PyExc_TypeError,
-            "readfile_iter() expects an iterator of files");
-        return NULL;
-    }
-
-    if (progressfn == Py_None) {
-        Py_DECREF(progressfn);
-        progressfn = NULL;
-    }
-    if (progressfn != NULL && !PyCallable_Check(progressfn)) {
-        PyErr_SetString(PyExc_TypeError,
-            "readfile_iter() expects a callable progress function");
-        return NULL;
-    }
-
     readiter_state *s = calloc(1, sizeof(readiter_state));
 
     s->fileiter = fileiter;
@@ -196,8 +174,8 @@ typedef struct {
 static Buf *Buf_new(void)
 {
     Buf *bufobj = malloc(sizeof(Buf));
-    bufobj->buf = malloc(BLOB_READ_SIZE);
-    bufobj->size = BLOB_READ_SIZE;
+    bufobj->buf = malloc(BLOB_READ_SIZE*2);
+    bufobj->size = BLOB_READ_SIZE*2;
     bufobj->start = bufobj->buf;
     bufobj->len = 0;
     return bufobj;
@@ -391,13 +369,32 @@ hashsplit_iter_new(PyTypeObject *type, PyObject *args, PyObject *kwargs)
     if (fanbits == -1)
         return NULL;
 
-    readiter_state *readiter = readiter_new(files, progressfn);
+    // INITIALISE THE READFILE ITERATOR
+
+    /* We expect an argument that supports the iterator protocol, but we might
+     * need to convert it from e.g. a list first
+     */
+    PyObject *fileiter = PyObject_GetIter(files);
+    if (fileiter == NULL)
+        return NULL;
+    if (!PyIter_Check(fileiter)) {
+        PyErr_SetString(PyExc_TypeError,
+            "readfile_iter() expects an iterator of files");
+        return NULL;
+    }
+    if (progressfn == Py_None) {
+        progressfn = NULL;
+    }
+    if (progressfn != NULL && !PyCallable_Check(progressfn)) {
+        PyErr_SetString(PyExc_TypeError,
+            "readfile_iter() expects a callable progress function");
+        return NULL;
+    }
+    // readiter now owns fileiter and progressfn
+    readiter_state *readiter = readiter_new(fileiter, progressfn);
     if (readiter == NULL)
         return NULL;
 
-    Py_INCREF(progressfn);
-    state->progressfn = progressfn;
-    state->files = files;
     // The splitbuf owns the readiter now
     state->splitbuf = splitbuf_new(readiter, basebits, fanbits);
 
@@ -408,8 +405,6 @@ static void hashsplit_iter_dealloc(PyObject *iterstate)
 {
     hashsplit_iter_state *state = (hashsplit_iter_state *)iterstate;
     splitbuf_del(state->splitbuf);
-    Py_DECREF(state->progressfn);
-    Py_DECREF(state->files);
     Py_TYPE(iterstate)->tp_free(iterstate);
 }
 
