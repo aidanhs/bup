@@ -204,10 +204,10 @@ static void Buf_eat (Buf *b, size_t count)
     b->start += count;
     b->len -= count;
 }
-static void Buf_peek (Buf *b, size_t count, unsigned char *target, size_t *got)
+static void Buf_peek (Buf *b, size_t count, unsigned char **target, size_t *got)
 {
     *got = count < b->len ? count : b->len;
-    memcpy(target, b->start, *got);
+    *target = b->start;
 }
 static void Buf_put (Buf *b, unsigned char *putsrc, size_t putlen)
 {
@@ -260,8 +260,8 @@ static int splitbuf_iternext(splitbuf_state *s, buf_and_level *retval)
 
     // Find next split point, stopping at BLOB_MAX or end of buffer (whichever
     // comes first) if we don't find one
-    unsigned char bufpeekbytes[BLOB_MAX];
-    Buf_peek(s->bufobj, BLOB_MAX, bufpeekbytes, &bufpeeklen);
+    unsigned char *bufpeekbytes;
+    Buf_peek(s->bufobj, BLOB_MAX, &bufpeekbytes, &bufpeeklen);
     if (!bufpeeklen)
         return 0;
     rollsum_init(&s->roll);
