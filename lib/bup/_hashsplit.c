@@ -82,11 +82,13 @@ static int readiter_iternext(readiter_state *s, unsigned char *buf, ssize_t *len
             return 0;
         Py_DECREF(tmp);
     }
-    if (s->ofs > 1024*1024)
+
+    int realfile = (s->fd != -1);
+
+    if (s->ofs > 1024*1024 && realfile)
         fadvise_done(s->fd, s->ofs - 1024*1024);
 
     while (1) {
-        int realfile = (s->fd != -1);
         if (realfile) {
             *len = read(s->fd, buf, BLOB_READ_SIZE);
         } else { /* Not a real file TODO: use PyObject_CallMethodObjArgs */
@@ -104,22 +106,30 @@ static int readiter_iternext(readiter_state *s, unsigned char *buf, ssize_t *len
                 char *inbuf;
                 Py_ssize_t inlen;
                 if (PyString_AsStringAndSize(
-                        bytesobj, &inbuf, &inlen) == -1)
+                        bytesobj, &inbuf, &inlen) == -1) {
+                    Py_DECREF(bytesobj);
                     return 0;
+                }
                 memcpy(buf, inbuf, inlen);
                 Py_DECREF(bytesobj);
                 assert(inlen == *len);
             }
             return 1;
         } else if (*len == 0) {
-            if (realfile)
+            if (realfile) {
                 fadvise_done(s->fd, s->ofs);
+            } else {
+                Py_DECREF(bytesobj);
+            }
             if (next_file(s) == -1)
                 return 0;
             s->ofs = 0;
             s->filenum++;
+            realfile = (s->fd != -1);
             /* Don't recurse to avoid stack overflow, loop instead */
         } else {
+            if (!realfile)
+                Py_DECREF(bytesobj);
             PyErr_SetString(PyExc_IOError, "failed to read file");
             return 0;
         }
