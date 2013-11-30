@@ -25,19 +25,61 @@ static struct {
 /********************************************************/
 
 
+// https://github.com/cloudwu/pbc - A protocol buffers library for C
+// http://stackoverflow.com/questions/11334226/find-good-buffer-library-in-c
+// http://contiki.sourceforge.net/docs/2.6/a01686.html
+// http://www.embedded.com/electronics-blogs/embedded-round-table/4419407/The-ring-buffer
+// http://www.fourwalledcubicle.com/files/LightweightRingBuff.h
+// http://atastypixel.com/blog/a-simple-fast-circular-buffer-implementation-for-audio-processing/
+// http://nadeausoftware.com/articles/2012/05/c_c_tip_how_copy_memory_quickly
+// http://nadeausoftware.com/articles/2012/03/c_c_tip_how_measure_cpu_time_benchmarking
 typedef struct {
     unsigned char *buf;
     size_t size; // actual size of buf
     unsigned char *start;
     size_t len; // length of buffer with a value
 } Buf;
-static Buf *Buf_new(void);
-static void Buf_del(Buf *b);
-static size_t Buf_used (Buf *b);
-static void Buf_eat (Buf *b, size_t count);
-static void Buf_peek (Buf *b, size_t count, unsigned char **target, size_t *got);
-static void Buf_prepput (Buf *b, size_t posslen, unsigned char **retbuf);
-static void Buf_haveput (Buf *b, size_t putlen);
+static Buf *Buf_new(void)
+{
+    Buf *bufobj = malloc(sizeof(Buf));
+    bufobj->buf = malloc(BLOB_READ_SIZE*2);
+    bufobj->size = BLOB_READ_SIZE*2;
+    bufobj->start = bufobj->buf;
+    bufobj->len = 0;
+    return bufobj;
+}
+static void Buf_del(Buf *b)
+{
+    free(b->buf);
+    free(b);
+}
+static size_t Buf_used (Buf *b)
+{
+    return b->len;
+}
+static void Buf_eat (Buf *b, size_t count)
+{
+    b->start += count;
+    b->len -= count;
+}
+static void Buf_peek (Buf *b, size_t count, unsigned char **target, size_t *got)
+{
+    *got = count < b->len ? count : b->len;
+    *target = b->start;
+}
+static void Buf_prepput (Buf *b, size_t posslen, unsigned char **putbuf)
+{
+    if (b->start + b->len + posslen > b->buf + b->size) {
+        assert(b->len + posslen <= b->size);
+        memmove(b->buf, b->start, b->len);
+        b->start = b->buf;
+    }
+    *putbuf = b->start + b->len;
+}
+static void Buf_haveput (Buf *b, size_t putlen)
+{
+    b->len += putlen;
+}
 
 
 /********************************************************/
@@ -184,61 +226,6 @@ static void readiter_del(readiter_state *s)
     Py_DECREF(s->fileiter);
     Py_XDECREF(s->curfile);
     Py_XDECREF(s->progressfn);
-}
-
-
-/********************************************************/
-/********************************************************/
-
-
-// https://github.com/cloudwu/pbc - A protocol buffers library for C
-// http://stackoverflow.com/questions/11334226/find-good-buffer-library-in-c
-// http://contiki.sourceforge.net/docs/2.6/a01686.html
-// http://www.embedded.com/electronics-blogs/embedded-round-table/4419407/The-ring-buffer
-// http://www.fourwalledcubicle.com/files/LightweightRingBuff.h
-// http://atastypixel.com/blog/a-simple-fast-circular-buffer-implementation-for-audio-processing/
-// http://nadeausoftware.com/articles/2012/05/c_c_tip_how_copy_memory_quickly
-// http://nadeausoftware.com/articles/2012/03/c_c_tip_how_measure_cpu_time_benchmarking
-static Buf *Buf_new(void)
-{
-    Buf *bufobj = malloc(sizeof(Buf));
-    bufobj->buf = malloc(BLOB_READ_SIZE*2);
-    bufobj->size = BLOB_READ_SIZE*2;
-    bufobj->start = bufobj->buf;
-    bufobj->len = 0;
-    return bufobj;
-}
-static void Buf_del(Buf *b)
-{
-    free(b->buf);
-    free(b);
-}
-static size_t Buf_used (Buf *b)
-{
-    return b->len;
-}
-static void Buf_eat (Buf *b, size_t count)
-{
-    b->start += count;
-    b->len -= count;
-}
-static void Buf_peek (Buf *b, size_t count, unsigned char **target, size_t *got)
-{
-    *got = count < b->len ? count : b->len;
-    *target = b->start;
-}
-static void Buf_prepput (Buf *b, size_t posslen, unsigned char **putbuf)
-{
-    if (b->start + b->len + posslen > b->buf + b->size) {
-        assert(b->len + posslen <= b->size);
-        memmove(b->buf, b->start, b->len);
-        b->start = b->buf;
-    }
-    *putbuf = b->start + b->len;
-}
-static void Buf_haveput (Buf *b, size_t putlen)
-{
-    b->len += putlen;
 }
 
 
