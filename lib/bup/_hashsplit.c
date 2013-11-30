@@ -26,6 +26,25 @@ static struct {
 
 
 typedef struct {
+    unsigned char *buf;
+    size_t size; // actual size of buf
+    unsigned char *start;
+    size_t len; // length of buffer with a value
+} Buf;
+static Buf *Buf_new(void);
+static void Buf_del(Buf *b);
+static size_t Buf_used (Buf *b);
+static void Buf_eat (Buf *b, size_t count);
+static void Buf_peek (Buf *b, size_t count, unsigned char **target, size_t *got);
+static void Buf_prepput (Buf *b, size_t posslen, unsigned char **retbuf);
+static void Buf_haveput (Buf *b, size_t putlen);
+
+
+/********************************************************/
+/********************************************************/
+
+
+typedef struct {
     PyObject_HEAD
     ssize_t ofs;
     Py_ssize_t filenum;
@@ -71,7 +90,7 @@ static void fadvise_done(int fd, ssize_t ofs)
 }
 
 /* Note we don't report progress when looping as we won't have read any bytes */
-static int readiter_iternext(readiter_state *s, unsigned char *buf, ssize_t *len)
+static int readiter_iternext(readiter_state *s, Buf *buf)
 {
     PyObject *bytesobj = NULL;
 
@@ -88,34 +107,38 @@ static int readiter_iternext(readiter_state *s, unsigned char *buf, ssize_t *len
     if (s->ofs > 1024*1024 && realfile)
         fadvise_done(s->fd, s->ofs - 1024*1024);
 
+    unsigned char *rbuf;
+    ssize_t rlen;
     while (1) {
+        Buf_prepput(buf, BLOB_READ_SIZE, &rbuf);
         if (realfile) {
-            *len = read(s->fd, buf, BLOB_READ_SIZE);
+            rlen = read(s->fd, rbuf, BLOB_READ_SIZE);
         } else { /* Not a real file TODO: use PyObject_CallMethodObjArgs */
             bytesobj = PyObject_CallMethod(
                 s->curfile, "read", "n", BLOB_READ_SIZE, NULL);
             if (bytesobj == NULL)
                 return 0;
-            *len = PyString_GET_SIZE(bytesobj);
+            rlen = PyString_GET_SIZE(bytesobj);
         }
 
-        if (*len > 0) {
-            s->prevread = *len;
-            s->ofs += *len;
+        if (rlen > 0) {
+            s->prevread = rlen;
+            s->ofs += rlen;
+            Buf_haveput(buf, rlen);
             if (!realfile) {
-                char *inbuf;
-                Py_ssize_t inlen;
+                char *pybuf;
+                Py_ssize_t pylen;
                 if (PyString_AsStringAndSize(
-                        bytesobj, &inbuf, &inlen) == -1) {
+                        bytesobj, &pybuf, &pylen) == -1) {
                     Py_DECREF(bytesobj);
                     return 0;
                 }
-                memcpy(buf, inbuf, inlen);
+                memcpy(rbuf, pybuf, pylen);
                 Py_DECREF(bytesobj);
-                assert(inlen == *len);
+                assert(pylen == rlen);
             }
             return 1;
-        } else if (*len == 0) {
+        } else if (rlen == 0) {
             if (realfile) {
                 fadvise_done(s->fd, s->ofs);
             } else {
@@ -163,6 +186,7 @@ static void readiter_del(readiter_state *s)
     Py_XDECREF(s->progressfn);
 }
 
+
 /********************************************************/
 /********************************************************/
 
@@ -175,12 +199,6 @@ static void readiter_del(readiter_state *s)
 // http://atastypixel.com/blog/a-simple-fast-circular-buffer-implementation-for-audio-processing/
 // http://nadeausoftware.com/articles/2012/05/c_c_tip_how_copy_memory_quickly
 // http://nadeausoftware.com/articles/2012/03/c_c_tip_how_measure_cpu_time_benchmarking
-typedef struct {
-    unsigned char *buf;
-    size_t size; // actual size of buf
-    unsigned char *start;
-    size_t len; // length of buffer with a value
-} Buf;
 static Buf *Buf_new(void)
 {
     Buf *bufobj = malloc(sizeof(Buf));
@@ -209,16 +227,24 @@ static void Buf_peek (Buf *b, size_t count, unsigned char **target, size_t *got)
     *got = count < b->len ? count : b->len;
     *target = b->start;
 }
-static void Buf_put (Buf *b, unsigned char *putsrc, size_t putlen)
+static void Buf_prepput (Buf *b, size_t posslen, unsigned char **putbuf)
 {
-    if (b->start + b->len + putlen > b->buf + b->size) {
-        assert(b->len + putlen <= b->size);
+    if (b->start + b->len + posslen > b->buf + b->size) {
+        assert(b->len + posslen <= b->size);
         memmove(b->buf, b->start, b->len);
         b->start = b->buf;
     }
-    memcpy(b->start + b->len, putsrc, putlen);
+    *putbuf = b->start + b->len;
+}
+static void Buf_haveput (Buf *b, size_t putlen)
+{
     b->len += putlen;
 }
+
+
+/********************************************************/
+/********************************************************/
+
 
 typedef struct {
     unsigned char buf[BLOB_MAX];
@@ -234,7 +260,6 @@ typedef struct {
     // For getting new data to roll over
     readiter_state *readiter;
     int readiter_done;
-    unsigned char readbuf[BLOB_READ_SIZE];
 } splitbuf_state;
 
 static int splitbuf_iternext(splitbuf_state *s, buf_and_level *retval)
@@ -246,15 +271,12 @@ static int splitbuf_iternext(splitbuf_state *s, buf_and_level *retval)
     // Fill up buffer to ensure we never terminate our roll before finding
     // an ofs
     while (Buf_used(s->bufobj) < BLOB_MAX && !s->readiter_done) {
-        ssize_t tmplen;
-        if (!readiter_iternext(s->readiter, s->readbuf, &tmplen)) {
+        if (!readiter_iternext(s->readiter, s->bufobj)) {
             if (PyErr_Occurred()) {
                 return 0;
             } else {
                 s->readiter_done = 1;
             }
-        } else {
-            Buf_put(s->bufobj, s->readbuf, tmplen);
         }
     }
 
