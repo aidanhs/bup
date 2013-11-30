@@ -234,7 +234,7 @@ static void readiter_del(readiter_state *s)
 
 
 typedef struct {
-    unsigned char buf[BLOB_MAX];
+    unsigned char *buf;
     size_t len;
     int level;
 } buf_and_level;
@@ -251,8 +251,7 @@ typedef struct {
 
 static int splitbuf_iternext(splitbuf_state *s, buf_and_level *retval)
 {
-    size_t bufpeeklen;
-    int ofs = 0, bits = -1;
+    int bits = -1;
     int level;
 
     // Fill up buffer to ensure we never terminate our roll before finding
@@ -269,27 +268,25 @@ static int splitbuf_iternext(splitbuf_state *s, buf_and_level *retval)
 
     // Find next split point, stopping at BLOB_MAX or end of buffer (whichever
     // comes first) if we don't find one
-    unsigned char *bufpeekbytes;
-    Buf_peek(s->bufobj, BLOB_MAX, &bufpeekbytes, &bufpeeklen);
+    size_t bufpeeklen;
+    Buf_peek(s->bufobj, BLOB_MAX, &retval->buf, &bufpeeklen);
     if (!bufpeeklen)
         return 0;
     rollsum_init(&s->roll);
-    ofs = bupsplit_next_ofs(&s->roll, bufpeekbytes, bufpeeklen, &bits);
+    retval->len = bupsplit_next_ofs(&s->roll, retval->buf, bufpeeklen, &bits);
 
     // Didn't find a split point, i.e. hit BLOB_MAX bytes or end of buffer
-    if (!ofs) {
-        ofs = bufpeeklen;
+    if (!retval->len) {
+        retval->len = bufpeeklen;
         bits = 0;
         level = 0;
     }
 
-    Buf_eat(s->bufobj, ofs);
+    Buf_eat(s->bufobj, retval->len);
     if (bits) {
         assert(bits >= BUP_BLOBBITS);
         level = (bits - s->basebits) / s->fanbits;
     }
-    memcpy(retval->buf, bufpeekbytes, ofs);
-    retval->len = ofs;
     retval->level = level;
     return 1;
 }
