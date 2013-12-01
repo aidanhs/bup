@@ -149,8 +149,12 @@ static int readiter_iternext(readiter_state *s, Buf *buf)
     if (s->ofs > 1024*1024 && realfile)
         fadvise_done(s->fd, s->ofs - 1024*1024);
 
+    // For reading into the Buf
     unsigned char *rbuf;
     ssize_t rlen;
+    // For dealing with python file-like objects
+    char *pybuf;
+    Py_ssize_t pylen;
     while (1) {
         Buf_prepput(buf, BLOB_READ_SIZE, &rbuf);
         if (realfile) {
@@ -168,10 +172,7 @@ static int readiter_iternext(readiter_state *s, Buf *buf)
             s->ofs += rlen;
             Buf_haveput(buf, rlen);
             if (!realfile) {
-                char *pybuf;
-                Py_ssize_t pylen;
-                if (PyString_AsStringAndSize(
-                        bytesobj, &pybuf, &pylen) == -1) {
+                if (PyString_AsStringAndSize(bytesobj, &pybuf, &pylen) == -1) {
                     Py_DECREF(bytesobj);
                     return 0;
                 }
