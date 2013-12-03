@@ -7,6 +7,9 @@
 //   http://docs.python.org/2/c-api/intro.html#include-files
 #include <Python.h>
 
+#include <assert.h>
+#include <fcntl.h>
+
 #include "bupsplit.h"
 
 // TODO: these shouldn't be #defined, get them from hashsplit module
@@ -121,6 +124,8 @@ static int next_file(readiter_state *s)
     } else {
         s->fd = -1;
     }
+    s->ofs = 0;
+    s->filenum++;
     return 0;
 }
 
@@ -183,14 +188,12 @@ static int readiter_iternext(readiter_state *s, Buf *buf)
             return 1;
         } else if (rlen == 0) {
             if (realfile) {
-                fadvise_done(s->fd, s->ofs);
+                fadvise_done(s->fd, 0);
             } else {
                 Py_DECREF(bytesobj);
             }
             if (next_file(s) == -1)
                 return 0;
-            s->ofs = 0;
-            s->filenum++;
             realfile = (s->fd != -1);
             /* Don't recurse to avoid stack overflow, loop instead */
         } else {
@@ -207,12 +210,11 @@ static readiter_state *readiter_new(PyObject *fileiter, PyObject *progressfn)
     readiter_state *s = calloc(1, sizeof(readiter_state));
 
     s->fileiter = fileiter;
-    s->ofs = 0;
-    s->filenum = 0;
     s->progressfn = progressfn;
     s->prevread = 0;
     s->curfile = NULL;
-    /* Will initialise fd and curfile with the first file */
+    s->filenum = -1;
+    /* Initialise ofs, fd and curfile with the first file, update filenum */
     if (next_file(s) == -1)
         return NULL;
 
