@@ -104,26 +104,15 @@ typedef struct {
 // Return -1 if the next file cannot be obtained (end of iter or error)
 static int next_file(readiter_state *s)
 {
-    PyObject *fdobj;
     Py_XDECREF(s->curfile);
     s->curfile = PyIter_Next(s->fileiter);
     if (s->curfile == NULL)
         return -1;
-    if (PyObject_HasAttrString(s->curfile, "fileno")) {
-        fdobj = PyObject_CallMethod(s->curfile, "fileno", NULL);
-        if (fdobj == NULL)
-            return -1;
-        s->fd = (int)PyInt_AsLong(fdobj);
-        Py_DECREF(fdobj);
-        /* fd can never be -1 */
-        if (s->fd == -1) {
-            if (PyErr_Occurred() == NULL)
-                PyErr_SetString(PyExc_ValueError, "invalid file descriptor");
-            return -1;
-        }
-    } else {
-        s->fd = -1;
-    }
+
+    /* Try to extract the underlying fd from this file-like object so we can
+     * directly make the read system call */
+    s->fd = PyFile_Check(s->curfile) ?
+                PyObject_AsFileDescriptor(s->curfile) : -1;
     s->ofs = 0;
     s->filenum++;
     return 0;
