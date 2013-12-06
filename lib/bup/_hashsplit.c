@@ -1,10 +1,22 @@
+/* This file implements a python module that will behave as a normal python
+ * iterator, returning sequential blobs split from a sequence of files.
+ *
+ * One important implementation detail worth noting - the memory passed back to
+ * python is reused for the next blob when control returns to this iterator. As
+ * such it is important that any caller completely finishes with the last blob
+ * before acquiring the next.
+ * This is very easy behaviour to change (see commented out line in
+ * hashsplit_iter_iternext) but has been done for speed - there are no memory
+ * copies between reading a blob from the file and returning the python buffer.
+ */
+
 #define _LARGEFILE64_SOURCE 1
 #define PY_SSIZE_T_CLEAN 1
 #undef NDEBUG
 #include "../../config/config.h"
 
-// According to Python, its header has to go first:
-//   http://docs.python.org/2/c-api/intro.html#include-files
+/* According to Python, its header has to go first: */
+/*   http://docs.python.org/2/c-api/intro.html#include-files */
 #include <Python.h>
 
 #include <assert.h>
@@ -12,15 +24,15 @@
 
 #include "bupsplit.h"
 
-// TODO: these shouldn't be #defined, get them from hashsplit module
+/* TODO: these shouldn't be #defined, get them from hashsplit module */
 #define BLOB_READ_SIZE 1024*1024
 #define BLOB_MAX 8192*4
 
-// Module-wide imports, never collected
+/* Module-wide imports, never collected */
 static struct {
     PyObject *math;
     PyObject *helpers;
-    PyObject *hashsplit; // The python module
+    PyObject *hashsplit; /* The python module */
 } imports;
 
 
@@ -28,19 +40,20 @@ static struct {
 /********************************************************/
 
 
-// https://github.com/cloudwu/pbc - A protocol buffers library for C
-// http://stackoverflow.com/questions/11334226/find-good-buffer-library-in-c
-// http://contiki.sourceforge.net/docs/2.6/a01686.html
-// http://www.embedded.com/electronics-blogs/embedded-round-table/4419407/The-ring-buffer
-// http://www.fourwalledcubicle.com/files/LightweightRingBuff.h
-// http://atastypixel.com/blog/a-simple-fast-circular-buffer-implementation-for-audio-processing/
-// http://nadeausoftware.com/articles/2012/05/c_c_tip_how_copy_memory_quickly
-// http://nadeausoftware.com/articles/2012/03/c_c_tip_how_measure_cpu_time_benchmarking
+/* https://github.com/cloudwu/pbc - A protocol buffers library for C
+ * http://stackoverflow.com/questions/11334226/find-good-buffer-library-in-c
+ * http://contiki.sourceforge.net/docs/2.6/a01686.html
+ * http://www.embedded.com/electronics-blogs/embedded-round-table/4419407/The-ring-buffer
+ * http://www.fourwalledcubicle.com/files/LightweightRingBuff.h
+ * http://atastypixel.com/blog/a-simple-fast-circular-buffer-implementation-for-audio-processing/
+ * http://nadeausoftware.com/articles/2012/05/c_c_tip_how_copy_memory_quickly
+ * http://nadeausoftware.com/articles/2012/03/c_c_tip_how_measure_cpu_time_benchmarking
+ */
 typedef struct {
     unsigned char *buf;
-    size_t size; // actual size of buf
+    size_t size; /* actual size of buf */
     unsigned char *start;
-    size_t len; // length of buffer with a value
+    size_t len; /* length of buffer with a value */
 } Buf;
 static Buf *Buf_new(void)
 {
@@ -70,6 +83,8 @@ static void Buf_peek (Buf *b, size_t count, unsigned char **target, size_t *got)
     *got = count < b->len ? count : b->len;
     *target = b->start;
 }
+/* Prepare the buffer to have a blob of length up to posslen added and return
+ * a pointer putbuf to an appropriate location for the blob to be put */
 static void Buf_prepput (Buf *b, size_t posslen, unsigned char **putbuf)
 {
     if (b->start + b->len + posslen > b->buf + b->size) {
@@ -79,6 +94,8 @@ static void Buf_prepput (Buf *b, size_t posslen, unsigned char **putbuf)
     }
     *putbuf = b->start + b->len;
 }
+/* Notifies the buffer how much data has been added, MUST be used after adding
+ * data to a pointer obtained with prepput */
 static void Buf_haveput (Buf *b, size_t putlen)
 {
     b->len += putlen;
@@ -91,17 +108,22 @@ static void Buf_haveput (Buf *b, size_t putlen)
 
 typedef struct {
     PyObject_HEAD
-    ssize_t ofs;
-    Py_ssize_t filenum;
-    /* Make sure python doesn't garbage collect and close the files */
-    PyObject *curfile;
-    int fd;
-    PyObject *fileiter;
+    /* For progress reporting */
     PyObject *progressfn;
     Py_ssize_t prevread;
+    Py_ssize_t filenum;
+    /* Hold a reference to prevent garbage collection of the current file */
+    PyObject *curfile;
+    /* For fadvise */
+    ssize_t ofs;
+    /* Where we get next files from */
+    PyObject *fileiter;
+    /* If -1, not a real file, otherwise an fd we can read from */
+    int fd;
 } readiter_state;
 
-// Return -1 if the next file cannot be obtained (end of iter or error)
+/* Set up the next file to be split for reading. Returns -1 if the next file
+ * cannot be obtained (end of iterator or error), 0 otherwise */
 static int next_file(readiter_state *s)
 {
     Py_XDECREF(s->curfile);
@@ -109,8 +131,8 @@ static int next_file(readiter_state *s)
     if (s->curfile == NULL)
         return -1;
 
-    /* Try to extract the underlying fd from this file-like object so we can
-     * directly make the read system call */
+    /* Try to get the underlying fd from this file-like object so we can call
+     * read directly */
     s->fd = PyFile_Check(s->curfile) ?
                 PyObject_AsFileDescriptor(s->curfile) : -1;
     s->ofs = 0;
@@ -125,11 +147,13 @@ static void fadvise_done(int fd, ssize_t ofs)
 #endif
 }
 
-/* Note we don't report progress when looping as we won't have read any bytes */
+/* Read a block from the current file into the Buf we've been given. Return 1 on
+ * success, 0 otherwise. */
 static int readiter_iternext(readiter_state *s, Buf *buf)
 {
     PyObject *bytesobj = NULL;
 
+    /* Report the progress we made in the previous iteration */
     if (s->progressfn != NULL) {
         PyObject *tmp = PyObject_CallFunction(
             s->progressfn, "nn", s->filenum, s->prevread);
@@ -143,10 +167,10 @@ static int readiter_iternext(readiter_state *s, Buf *buf)
     if (s->ofs > 1024*1024 && realfile)
         fadvise_done(s->fd, s->ofs - 1024*1024);
 
-    // For reading into the Buf
+    /* For reading into the Buf */
     unsigned char *rbuf;
     ssize_t rlen;
-    // For dealing with python file-like objects
+    /* For dealing with python file-like objects */
     char *pybuf;
     Py_ssize_t pylen;
     while (1) {
@@ -161,6 +185,7 @@ static int readiter_iternext(readiter_state *s, Buf *buf)
             rlen = PyString_GET_SIZE(bytesobj);
         }
 
+        /* Successfully read some bytes */
         if (rlen > 0) {
             s->prevread = rlen;
             s->ofs += rlen;
@@ -175,6 +200,7 @@ static int readiter_iternext(readiter_state *s, Buf *buf)
                 assert(pylen == rlen);
             }
             return 1;
+        /* No bytes (end of file) */
         } else if (rlen == 0) {
             if (realfile) {
                 fadvise_done(s->fd, 0);
@@ -184,7 +210,8 @@ static int readiter_iternext(readiter_state *s, Buf *buf)
             if (next_file(s) == -1)
                 return 0;
             realfile = (s->fd != -1);
-            /* Don't recurse to avoid stack overflow, loop instead */
+            /* Avoid stack overflow by looping instead of recursing */
+        /* Error while reading */
         } else {
             if (!realfile)
                 Py_DECREF(bytesobj);
@@ -236,18 +263,19 @@ typedef struct {
     int basebits;
     int fanbits;
     Rollsum roll;
-    // For getting new data to roll over
+    /* For getting new data to roll over */
     readiter_state *readiter;
     int readiter_done;
 } splitbuf_state;
 
+/* Read blocks and split them, returning a pointer to the memory, a length and
+ * a level (for fanout) */
 static int splitbuf_iternext(splitbuf_state *s, buf_and_level *retval)
 {
     int bits = -1;
     int level;
 
-    // Fill up buffer to ensure we never terminate our roll before finding
-    // an ofs
+    /* Fill buffer to ensure we don't end our roll before splitting */
     while (Buf_used(s->bufobj) < BLOB_MAX && !s->readiter_done) {
         if (!readiter_iternext(s->readiter, s->bufobj)) {
             if (PyErr_Occurred()) {
@@ -258,8 +286,8 @@ static int splitbuf_iternext(splitbuf_state *s, buf_and_level *retval)
         }
     }
 
-    // Find next split point, stopping at BLOB_MAX or end of buffer (whichever
-    // comes first) if we don't find one
+    /* Find next split point, stopping at BLOB_MAX or end of buffer (whichever
+     * comes first) if we don't find one */
     size_t bufpeeklen;
     Buf_peek(s->bufobj, BLOB_MAX, &retval->buf, &bufpeeklen);
     if (!bufpeeklen)
@@ -267,7 +295,7 @@ static int splitbuf_iternext(splitbuf_state *s, buf_and_level *retval)
     rollsum_init(&s->roll);
     retval->len = bupsplit_next_ofs(&s->roll, retval->buf, bufpeeklen, &bits);
 
-    // Didn't find a split point, i.e. hit BLOB_MAX bytes or end of buffer
+    /* Didn't find a split point, i.e. hit BLOB_MAX bytes or end of buffer */
     if (!retval->len) {
         retval->len = bufpeeklen;
         bits = 0;
@@ -317,6 +345,7 @@ typedef struct {
     buf_and_level ret;
 } hashsplit_iter_state;
 
+/* Return a python buffer containing the next blob that has been split */
 static PyObject* hashsplit_iter_iternext(PyObject *self)
 {
     hashsplit_iter_state *s = (hashsplit_iter_state *)self;
@@ -327,9 +356,12 @@ static PyObject* hashsplit_iter_iternext(PyObject *self)
             PyErr_SetNone(PyExc_StopIteration);
             return NULL;
         }
+        /* This is the old buffer interface and isn't compatible with Python 3 */
         PyObject *tmpbuf = PyBuffer_FromMemory(s->ret.buf, s->ret.len);
         return Py_BuildValue("Ni", tmpbuf, s->ret.level);
-        //return Py_BuildValue("s#i", s->ret.buf, s->ret.len, s->ret.level);
+        /* The below will copy the memory. See implementation details at the top
+         * of this file to understand why this might be necessary */
+        /* return Py_BuildValue("s#i", s->ret.buf, s->ret.len, s->ret.level); */
     }
 }
 
@@ -377,7 +409,7 @@ hashsplit_iter_new(PyTypeObject *type, PyObject *args, PyObject *kwargs)
     if (fanbits == -1)
         return NULL;
 
-    // INITIALISE THE READFILE ITERATOR
+    /* INITIALISE THE READFILE ITERATOR */
 
     /* We expect an argument that supports the iterator protocol, but we might
      * need to convert it from e.g. a list first
@@ -398,12 +430,12 @@ hashsplit_iter_new(PyTypeObject *type, PyObject *args, PyObject *kwargs)
             "readfile_iter() expects a callable progress function");
         return NULL;
     }
-    // readiter now owns fileiter and progressfn
+    /* readiter now owns fileiter and progressfn */
     readiter_state *readiter = readiter_new(fileiter, progressfn);
     if (readiter == NULL)
         return NULL;
 
-    // The splitbuf owns the readiter now
+    /* The splitbuf owns the readiter now */
     state->splitbuf = splitbuf_new(readiter, basebits, fanbits);
 
     return (PyObject *)state;
@@ -463,7 +495,7 @@ static PyTypeObject hashsplit_iter = {
 
 
 static PyMethodDef hashsplit_methods[] = {
-    { NULL, NULL, 0, NULL },  // sentinel
+    { NULL, NULL, 0, NULL },  /* sentinel */
 };
 
 PyMODINIT_FUNC init_hashsplit(void)
@@ -502,7 +534,7 @@ PyMODINIT_FUNC init_hashsplit(void)
     if (PyType_Ready(&hashsplit_iter) < 0)
         return;
     Py_INCREF((PyObject *)&hashsplit_iter);
-    // TODO: check for error below
-    // TODO: double check all Py_INCREFs look reasonable
+    /* TODO: check for error below */
+    /* TODO: double check all Py_INCREFs look reasonable */
     PyModule_AddObject(m, "_hashsplit_iter", (PyObject *)&hashsplit_iter);
 }
