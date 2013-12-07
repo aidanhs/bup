@@ -40,15 +40,6 @@ static struct {
 /********************************************************/
 
 
-/* https://github.com/cloudwu/pbc - A protocol buffers library for C
- * http://stackoverflow.com/questions/11334226/find-good-buffer-library-in-c
- * http://contiki.sourceforge.net/docs/2.6/a01686.html
- * http://www.embedded.com/electronics-blogs/embedded-round-table/4419407/The-ring-buffer
- * http://www.fourwalledcubicle.com/files/LightweightRingBuff.h
- * http://atastypixel.com/blog/a-simple-fast-circular-buffer-implementation-for-audio-processing/
- * http://nadeausoftware.com/articles/2012/05/c_c_tip_how_copy_memory_quickly
- * http://nadeausoftware.com/articles/2012/03/c_c_tip_how_measure_cpu_time_benchmarking
- */
 typedef struct {
     unsigned char *buf;
     size_t size; /* actual size of buf */
@@ -356,7 +347,7 @@ static PyObject* hashsplit_iter_iternext(PyObject *self)
             PyErr_SetNone(PyExc_StopIteration);
             return NULL;
         }
-        /* This is the old buffer interface and isn't compatible with Python 3 */
+        /* TODO: This is the old buffer interface and isn't compatible with Python 3 */
         PyObject *tmpbuf = PyBuffer_FromMemory(s->ret.buf, s->ret.len);
         return Py_BuildValue("Ni", tmpbuf, s->ret.level);
         /* The below will copy the memory. See implementation details at the top
