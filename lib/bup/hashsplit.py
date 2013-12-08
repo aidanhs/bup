@@ -28,12 +28,6 @@ class ZCBuf:
         self.start += count
         self.length -= count
 
-    def get(self, count):
-        v = buffer(self.data, self.start, count)
-        self.start += count
-        self.length -= count
-        return v
-
     def used(self):
         return self.length
 
@@ -141,38 +135,40 @@ def zcreadfile_iter(files, buf, progress=None):
             if n:
                 buf.haveput(n)
                 ofs += n
-                yield
+                yield False
             else:
                 fadvise_done(f, ofs)
                 break
 
 def _zcsplitbuf(buf, basebits, fanbits):
-    while 1:
-        b = buf.peek(buf.used())
-        (ofs, bits) = _helpers.splitbuf(b)
-        if ofs > BLOB_MAX:
-            ofs = BLOB_MAX
-        if ofs:
-            buf.eat(ofs)
-            level = (bits-basebits)//fanbits  # integer division
-            yield buffer(b, 0, ofs), level
-        else:
-            break
-    while buf.used() >= BLOB_MAX:
-        # limit max blob size
-        yield buf.get(BLOB_MAX), 0
+    b = buf.peek(BLOB_MAX)
+    (ofs, bits) = _helpers.splitbuf(b)
+    if ofs == 0:
+        ofs = len(b)
+        level = 0
+        bits = 0
+    if bits:
+        level = (bits-basebits)//fanbits  # integer division
+    buf.eat(ofs)
+    return buffer(b, 0, ofs), level
 
-
+import __builtin__
+next = __builtin__.next
 def _zchashsplit_iter(files, progress):
     assert(BLOB_READ_SIZE > BLOB_MAX)
     basebits = _helpers.blobbits()
     fanbits = int(math.log(fanout or 128, 2))
     buf = ZCBuf()
-    for _ in zcreadfile_iter(files, buf, progress):
-        for buf_and_level in _zcsplitbuf(buf, basebits, fanbits):
-            yield buf_and_level
-    if buf.used():
-        yield buf.get(buf.used()), 0
+    readiter = zcreadfile_iter(files, buf, progress)
+    readfinished = False
+    while True:
+        while buf.used() < BLOB_MAX and not readfinished:
+            if next(readiter, True):
+                readfinished = True
+                break
+        yield _zcsplitbuf(buf, basebits, fanbits)
+        if buf.used() == 0:
+            break
 
 def _hashsplit_iter_keep_boundaries(files, progress):
     for real_filenum,f in enumerate(files):
