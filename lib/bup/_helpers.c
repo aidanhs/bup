@@ -675,6 +675,7 @@ static PyObject *open_noatime(PyObject *self, PyObject *args)
     return Py_BuildValue("i", fd);
 }
 
+
 static PyObject *fadvise_done(PyObject *self, PyObject *args)
 {
     int fd = -1;
@@ -1144,11 +1145,9 @@ PyMODINIT_FUNC init_helpers(void)
     assert(sizeof(PY_LONG_LONG) <= sizeof(long long));
 
     char *e;
-
     PyObject *m = Py_InitModule("_helpers", helper_methods);
     if (m == NULL)
         return;
-
     e = getenv("BUP_FORCE_TTY");
     istty2 = isatty(2) || (atoi(e ? e : "0") & 2);
     unpythonize_argv();
