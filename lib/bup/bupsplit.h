@@ -30,8 +30,6 @@
 #ifndef __BUPSPLIT_H
 #define __BUPSPLIT_H
 
-#include <stdint.h>
-
 #define BUP_BLOBBITS (13)
 #define BUP_BLOBSIZE (1<<BUP_BLOBBITS)
 #define BUP_WINDOWBITS (6)
@@ -40,14 +38,7 @@
 #ifdef __cplusplus
 extern "C" {
 #endif
-
-typedef struct {
-    unsigned s1, s2;
-    uint8_t window[BUP_WINDOWSIZE];
-    int wofs;
-} Rollsum;
-void rollsum_init(Rollsum *r);
-int bupsplit_next_ofs(Rollsum *r, const unsigned char *buf, int len, int *bits);
+    
 int bupsplit_find_ofs(const unsigned char *buf, int len, int *bits);
 int bupsplit_selftest(void);
 

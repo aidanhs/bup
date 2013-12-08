@@ -253,7 +253,6 @@ typedef struct {
     Buf *bufobj;
     int basebits;
     int fanbits;
-    Rollsum roll;
     /* For getting new data to roll over */
     readiter_state *readiter;
     int readiter_done;
@@ -283,8 +282,7 @@ static int splitbuf_iternext(splitbuf_state *s, buf_and_level *retval)
     Buf_peek(s->bufobj, BLOB_MAX, &retval->buf, &bufpeeklen);
     if (!bufpeeklen)
         return 0;
-    rollsum_init(&s->roll);
-    retval->len = bupsplit_next_ofs(&s->roll, retval->buf, bufpeeklen, &bits);
+    retval->len = bupsplit_find_ofs(retval->buf, bufpeeklen, &bits);
 
     /* Didn't find a split point, i.e. hit BLOB_MAX bytes or end of buffer */
     if (!retval->len) {
