@@ -13,6 +13,41 @@ GIT_MODE_TREE = 040000
 GIT_MODE_SYMLINK = 0120000
 assert(GIT_MODE_TREE != 40000)  # 0xxx should be treated as octal
 
+class ZCBuf:
+    def __init__(self):
+        self.size = 2*BLOB_READ_SIZE
+        self.data = bytearray(self.size)
+        self.start = 0
+        self.length = 0
+
+    def peek(self, count):
+        return buffer(self.data, self.start, count)
+
+    def eat(self, count):
+        self.start += count
+        self.length -= count
+
+    def get(self, count):
+        v = buffer(self.data, self.start, count)
+        self.start += count
+        self.length -= count
+        return v
+
+    def used(self):
+        return self.length
+
+    def prepput(self, posslen):
+        # If new data would overflow off end of buffer, move current data to
+        # beginning of buffer
+        if self.start + self.length + posslen > self.size:
+            assert(self.length + posslen < self.size)
+            self.data[:self.length] = self.data[self.start:self.start+self.length]
+            self.start = 0
+        return memoryview(self.data)[self.start+self.length:self.start+self.length+posslen]
+
+    def haveput(self, putlen):
+        self.length += putlen
+
 # The purpose of this type of buffer is to avoid copying on peek(), get(),
 # and eat().  We do copy the buffer contents on put(), but that should
 # be ok if we always only put() large amounts of data at a time.
@@ -87,6 +122,56 @@ def _hashsplit_iter(files, progress):
     if buf.used():
         yield buf.get(buf.used()), 0
 
+#####################################
+
+def zcreadfile_iter(files, buf, progress=None):
+    for filenum,f in enumerate(files):
+        ofs = 0
+        n = 0
+        while 1:
+            if progress:
+                progress(filenum, n)
+            if ofs > 1024*1024:
+                fadvise_done(f, ofs - 1024*1024)
+            putbuf = buf.prepput(BLOB_READ_SIZE)
+            # TODO: readinto is technically only supported for the io library,
+            # so need to convert open calls everywhere to io.FileIO
+            n = f.readinto(putbuf)
+            if n:
+                buf.haveput(n)
+                ofs += n
+                yield
+            else:
+                fadvise_done(f, ofs)
+                break
+
+def _zcsplitbuf(buf, basebits, fanbits):
+    while 1:
+        b = buf.peek(buf.used())
+        (ofs, bits) = _helpers.splitbuf(b)
+        if ofs > BLOB_MAX:
+            ofs = BLOB_MAX
+        if ofs:
+            buf.eat(ofs)
+            level = (bits-basebits)//fanbits  # integer division
+            yield buffer(b, 0, ofs), level
+        else:
+            break
+    while buf.used() >= BLOB_MAX:
+        # limit max blob size
+        yield buf.get(BLOB_MAX), 0
+
+
+def _zchashsplit_iter(files, progress):
+    assert(BLOB_READ_SIZE > BLOB_MAX)
+    basebits = _helpers.blobbits()
+    fanbits = int(math.log(fanout or 128, 2))
+    buf = ZCBuf()
+    for _ in zcreadfile_iter(files, buf, progress):
+        for buf_and_level in _zcsplitbuf(buf, basebits, fanbits):
+            yield buf_and_level
+    if buf.used():
+        yield buf.get(buf.used()), 0
 
 def _hashsplit_iter_keep_boundaries(files, progress):
     for real_filenum,f in enumerate(files):

@@ -108,8 +108,14 @@ if opt.git_ids:
         def __init__(self, it):
             self.it = iter(it)
         def read(self, size):
-            v = next(self.it)
-            return v or ''
+            v = next(self.it) or ''
+            assert(size >= len(v))
+            return v
+        def readinto(self, buf):
+            v = next(self.it) or ''
+            assert(len(buf) >= len(v))
+            buf[:len(v)] = v
+            return len(v)
     def read_ids():
         while 1:
             line = sys.stdin.readline()
