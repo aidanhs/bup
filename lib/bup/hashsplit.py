@@ -21,6 +21,7 @@ class ZCBuf:
         self.length = 0
 
     def peek(self, count):
+        if count > self.length: count = self.length
         return buffer(self.data, self.start, count)
 
     def eat(self, count):
