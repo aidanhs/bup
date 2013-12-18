@@ -34,11 +34,12 @@ class ZCBuf:
     def prepput(self, posslen):
         # If new data would overflow off end of buffer, move current data to
         # beginning of buffer
-        if self.start + self.length + posslen > self.size:
+        end = self.start + self.length
+        if end + posslen > self.size:
             assert(self.length + posslen < self.size)
-            self.data[:self.length] = self.data[self.start:self.start+self.length]
+            self.data[:self.length] = self.data[self.start:end]
             self.start = 0
-        return memoryview(self.data)[self.start+self.length:self.start+self.length+posslen]
+        return memoryview(self.data)[end:end+posslen]
 
     def haveput(self, putlen):
         self.length += putlen
@@ -143,10 +144,12 @@ def zcreadfile_iter(files, buf, progress=None):
 def _zcsplitbuf(buf, basebits, fanbits):
     b = buf.peek(BLOB_MAX)
     (ofs, bits) = _helpers.splitbuf(b)
+    # Didn't find an splitpoint in the given buffer
     if ofs == 0:
         ofs = len(b)
         level = 0
         bits = 0
+    # If did find the offset, determine the level
     if bits:
         level = (bits-basebits)//fanbits  # integer division
     buf.eat(ofs)
