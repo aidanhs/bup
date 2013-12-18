@@ -15,8 +15,8 @@ assert(GIT_MODE_TREE != 40000)  # 0xxx should be treated as octal
 
 class ZCBuf:
     def __init__(self):
-        self.size = 2*BLOB_READ_SIZE
-        self.data = bytearray(self.size)
+        # Must be at least BLOB_READ_SIZE + BLOB_MAX - 1
+        self.data = bytearray(2*BLOB_READ_SIZE)
         self.start = 0
         self.length = 0
 
@@ -35,8 +35,8 @@ class ZCBuf:
         # If new data would overflow off end of buffer, move current data to
         # beginning of buffer
         end = self.start + self.length
-        if end + posslen > self.size:
-            assert(self.length + posslen < self.size)
+        if end + posslen > len(self.data):
+            assert(self.length + posslen < len(self.data))
             self.data[:self.length] = self.data[self.start:end]
             self.start = 0
         return memoryview(self.data)[end:end+posslen]
