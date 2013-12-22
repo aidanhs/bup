@@ -13,79 +13,92 @@ GIT_MODE_TREE = 040000
 GIT_MODE_SYMLINK = 0120000
 assert(GIT_MODE_TREE != 40000)  # 0xxx should be treated as octal
 
-# The purpose of this type of buffer is to avoid copying on peek(), get(),
-# and eat().  We do copy the buffer contents on put(), but that should
-# be ok if we always only put() large amounts of data at a time.
+# The purpose of this buffer is to avoid both memory allocation and copying as
+# much as possible. There is one allocation at init and a max of one copy every
+# two put()s
 class Buf:
     def __init__(self):
-        self.data = ''
+        # Must be at least BLOB_READ_SIZE + BLOB_MAX - 1
+        self.data = bytearray(2*BLOB_READ_SIZE)
         self.start = 0
+        self.length = 0
 
-    def put(self, s):
-        if s:
-            self.data = buffer(self.data, self.start) + s
-            self.start = 0
-            
     def peek(self, count):
+        if count > self.length: count = self.length
         return buffer(self.data, self.start, count)
-    
+
     def eat(self, count):
         self.start += count
-
-    def get(self, count):
-        v = buffer(self.data, self.start, count)
-        self.start += count
-        return v
+        self.length -= count
 
     def used(self):
-        return len(self.data) - self.start
+        return self.length
 
+    def prepput(self, posslen):
+        # If new data would overflow off end of buffer, move current data to
+        # beginning of buffer
+        end = self.start + self.length
+        if end + posslen > len(self.data):
+            assert(self.length + posslen < len(self.data))
+            self.data[:self.length] = self.data[self.start:end]
+            self.start = 0
+            end = self.length
+        return memoryview(self.data)[end:end+posslen]
 
-def readfile_iter(files, progress=None):
+    def haveput(self, putlen):
+        self.length += putlen
+
+def readfile_iter(files, buf, progress=None):
     for filenum,f in enumerate(files):
         ofs = 0
-        b = ''
+        n = 0
         while 1:
             if progress:
-                progress(filenum, len(b))
-            fadvise_done(f, max(0, ofs - 1024*1024))
-            b = f.read(BLOB_READ_SIZE)
-            ofs += len(b)
-            if not b:
+                progress(filenum, n)
+            if ofs > 1024*1024:
+                fadvise_done(f, ofs - 1024*1024)
+            putbuf = buf.prepput(BLOB_READ_SIZE)
+            # TODO: readinto is technically only supported for the io library,
+            # so need to convert open calls everywhere to io.FileIO
+            n = f.readinto(putbuf)
+            if n:
+                buf.haveput(n)
+                ofs += n
+                yield False
+            else:
                 fadvise_done(f, ofs)
                 break
-            yield b
-
 
 def _splitbuf(buf, basebits, fanbits):
-    while 1:
-        b = buf.peek(buf.used())
-        (ofs, bits) = _helpers.splitbuf(b)
-        if ofs > BLOB_MAX:
-            ofs = BLOB_MAX
-        if ofs:
-            buf.eat(ofs)
-            level = (bits-basebits)//fanbits  # integer division
-            yield buffer(b, 0, ofs), level
-        else:
-            break
-    while buf.used() >= BLOB_MAX:
-        # limit max blob size
-        yield buf.get(BLOB_MAX), 0
-
+    b = buf.peek(BLOB_MAX)
+    (ofs, bits) = _helpers.splitbuf(b)
+    # Didn't find an splitpoint in the given buffer
+    if ofs == 0:
+        ofs = len(b)
+        level = 0
+        bits = 0
+    # If did find a splitpoint, determine the level
+    if bits:
+        level = (bits-basebits)//fanbits  # integer division
+    buf.eat(ofs)
+    return buffer(b, 0, ofs), level
 
 def _hashsplit_iter(files, progress):
     assert(BLOB_READ_SIZE > BLOB_MAX)
     basebits = _helpers.blobbits()
     fanbits = int(math.log(fanout or 128, 2))
     buf = Buf()
-    for inblock in readfile_iter(files, progress):
-        buf.put(inblock)
-        for buf_and_level in _splitbuf(buf, basebits, fanbits):
-            yield buf_and_level
-    if buf.used():
-        yield buf.get(buf.used()), 0
-
+    readiter = readfile_iter(files, buf, progress)
+    readfinished = False
+    # TODO: add a test for where the split happens at the end of the buffer
+    while True:
+        while buf.used() < BLOB_MAX and not readfinished:
+            if next(readiter, True):
+                readfinished = True
+                break
+        if buf.used() == 0:
+            break
+        yield _splitbuf(buf, basebits, fanbits)
 
 def _hashsplit_iter_keep_boundaries(files, progress):
     for real_filenum,f in enumerate(files):

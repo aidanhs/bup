@@ -104,12 +104,16 @@ if opt.git_ids:
     # (not very efficient), or split_to_shalist() expected an iterator instead
     # of a file.
     cp = git.CatPipe()
+    # TODO: add a test for a code path that uses self.remaining
     class IterToFile:
         def __init__(self, it):
             self.it = iter(it)
-        def read(self, size):
-            v = next(self.it, None)
-            return v or ''
+            self.remaining = ''
+        def readinto(self, buf):
+            v = self.remaining or next(self.it, None) or ''
+            v, self.remaining = v[:len(buf)], v[len(buf):]
+            buf[:len(v)] = v
+            return len(v)
     def read_ids():
         while 1:
             line = sys.stdin.readline()
